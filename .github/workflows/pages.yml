@@ -1,0 +1,55 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  collect-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Collect redacted snapshot
+        id: collect
+        continue-on-error: true
+        env:
+          # Fine-grained PAT with security-alert + actions read across governed repos.
+          # Default GITHUB_TOKEN cannot read Dependabot/code-scanning alerts on other repos.
+          GITHUB_TOKEN: ${{ secrets.FLEET_DASHBOARD_TOKEN }}
+        run: |
+          if [ -z "${GITHUB_TOKEN}" ]; then
+            echo "FLEET_DASHBOARD_TOKEN unset — keeping committed fixture snapshot"
+            exit 1
+          fi
+          npm run collect
+      - name: Note fixture fallback
+        if: steps.collect.outcome != 'success'
+        run: echo "Deploying with public/data/snapshot.json fixture (collector skipped or failed)."
+      - run: npm run build
+        env:
+          VITE_BASE: /playbook-dashboard/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

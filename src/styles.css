@@ -1,0 +1,267 @@
+:root {
+  --bg-0: #0f1412;
+  --bg-1: #171e1a;
+  --bg-2: #1f2923;
+  --ink: #e7efe8;
+  --ink-muted: #9aada0;
+  --line: #2d3b33;
+  --accent: #3d8f6e;
+  --accent-soft: rgba(61, 143, 110, 0.16);
+  --warn: #c4923a;
+  --danger: #c45c4a;
+  --ok: #4ea37a;
+  --font-sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(61, 143, 110, 0.18), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(196, 146, 58, 0.08), transparent 50%),
+    linear-gradient(180deg, #121815 0%, var(--bg-0) 40%, #0c100e 100%);
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+
+.app {
+  width: min(1120px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2.5rem 0 4rem;
+}
+
+.hero {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.brand {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.hero p {
+  margin: 0;
+  max-width: 46rem;
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pill[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.pill[data-tone='ok'] {
+  color: var(--ok);
+}
+
+.pill[data-tone='danger'] {
+  color: var(--danger);
+}
+
+.overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+@media (max-width: 800px) {
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.stat {
+  padding: 1rem 1.1rem;
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--line);
+}
+
+.stat .label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.stat .value {
+  margin-top: 0.45rem;
+  font-size: 1.8rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.section {
+  margin-bottom: 2.25rem;
+}
+
+.section header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.section h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.section .lede {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  background: rgba(23, 30, 26, 0.85);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: rgba(15, 20, 18, 0.65);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.repo-link {
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.repo-link:hover {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+
+.badge[data-tone='ok'] {
+  color: var(--ok);
+  border-color: rgba(78, 163, 122, 0.45);
+  background: rgba(78, 163, 122, 0.1);
+}
+
+.badge[data-tone='warn'] {
+  color: var(--warn);
+  border-color: rgba(196, 146, 58, 0.45);
+  background: rgba(196, 146, 58, 0.1);
+}
+
+.badge[data-tone='danger'] {
+  color: var(--danger);
+  border-color: rgba(196, 92, 74, 0.45);
+  background: rgba(196, 92, 74, 0.1);
+}
+
+.badge[data-tone='muted'] {
+  color: var(--ink-muted);
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.floor-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.count-stack {
+  display: grid;
+  gap: 0.2rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.state {
+  padding: 2rem;
+  border: 1px dashed var(--line);
+  color: var(--ink-muted);
+}
+
+.error {
+  color: var(--danger);
+}

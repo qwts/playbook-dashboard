@@ -1,0 +1,251 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-26T18:00:00.000Z",
+  "source": {
+    "account": "qwts",
+    "manifestRepo": "qwts/playbook-engineering",
+    "manifestPath": "governance/repos.json"
+  },
+  "repos": [
+    {
+      "name": "playbook-engineering",
+      "visibility": "public",
+      "status": "active",
+      "sharedCi": true,
+      "codexSyncEnabled": false,
+      "delta": "",
+      "note": "This repository — source of the governance it describes.",
+      "htmlUrl": "https://github.com/qwts/playbook-engineering",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": true,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 1,
+        "codeScanningOpen": 1,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": "CI",
+        "conclusion": "success",
+        "status": "completed",
+        "updatedAt": "2026-07-26T17:30:00.000Z",
+        "htmlUrl": "https://github.com/qwts/playbook-engineering/actions"
+      }
+    },
+    {
+      "name": "overlook",
+      "visibility": "public",
+      "status": "active",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "Version-consistency gate in CI.",
+      "note": "Formerly named photos.",
+      "htmlUrl": "https://github.com/qwts/overlook",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": true,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 1,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": "CI",
+        "conclusion": "success",
+        "status": "completed",
+        "updatedAt": "2026-07-26T16:45:00.000Z",
+        "htmlUrl": "https://github.com/qwts/overlook/actions"
+      }
+    },
+    {
+      "name": "image-trail",
+      "visibility": "public",
+      "status": "active",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "Coverage floor 71% lines / 80% branches.",
+      "note": "",
+      "htmlUrl": "https://github.com/qwts/image-trail",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": true,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 6,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": "CI",
+        "conclusion": "success",
+        "status": "completed",
+        "updatedAt": "2026-07-26T15:10:00.000Z",
+        "htmlUrl": "https://github.com/qwts/image-trail/actions"
+      }
+    },
+    {
+      "name": "cartograph",
+      "visibility": "public",
+      "status": "active",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "Rust + FE gates; spec/traceability.",
+      "note": "",
+      "htmlUrl": "https://github.com/qwts/cartograph",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": true,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 0,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": "CI",
+        "conclusion": "success",
+        "status": "completed",
+        "updatedAt": "2026-07-26T14:00:00.000Z",
+        "htmlUrl": "https://github.com/qwts/cartograph/actions"
+      }
+    },
+    {
+      "name": "bookmarkit",
+      "visibility": "public",
+      "status": "active",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "",
+      "note": "Pure consumer.",
+      "htmlUrl": "https://github.com/qwts/bookmarkit",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": true,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 0,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": "CI",
+        "conclusion": "success",
+        "status": "completed",
+        "updatedAt": "2026-07-26T13:20:00.000Z",
+        "htmlUrl": "https://github.com/qwts/bookmarkit/actions"
+      }
+    },
+    {
+      "name": "quorum",
+      "visibility": "public",
+      "status": "active",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "",
+      "note": "Pure consumer.",
+      "htmlUrl": "https://github.com/qwts/quorum",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": false,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 1,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": "CI",
+        "conclusion": "success",
+        "status": "completed",
+        "updatedAt": "2026-07-26T12:00:00.000Z",
+        "htmlUrl": "https://github.com/qwts/quorum/actions"
+      }
+    },
+    {
+      "name": "agent-bot-identity",
+      "visibility": "public",
+      "status": "onboarding",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "",
+      "note": "Onboarding.",
+      "htmlUrl": "https://github.com/qwts/agent-bot-identity",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": false,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 0,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": null,
+        "conclusion": null,
+        "status": null,
+        "updatedAt": null,
+        "htmlUrl": null
+      }
+    },
+    {
+      "name": "codex-rules-editor",
+      "visibility": "public",
+      "status": "onboarding",
+      "sharedCi": false,
+      "codexSyncEnabled": true,
+      "delta": "",
+      "note": "Onboarding.",
+      "htmlUrl": "https://github.com/qwts/codex-rules-editor",
+      "securityFloor": {
+        "secretScanning": true,
+        "pushProtection": true,
+        "dependabotAlerts": true,
+        "privateVulnerabilityReporting": true,
+        "codeqlConfigured": false,
+        "defaultBranchRuleset": true
+      },
+      "security": {
+        "dependabotOpen": 1,
+        "codeScanningOpen": 0,
+        "secretScanningOpen": 0
+      },
+      "ci": {
+        "workflowName": null,
+        "conclusion": null,
+        "status": null,
+        "updatedAt": null,
+        "htmlUrl": null
+      }
+    }
+  ]
+}
