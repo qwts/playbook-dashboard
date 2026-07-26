@@ -47,7 +47,7 @@ jobs:
         run: echo "Deploying with public/data/snapshot.json fixture (collector skipped or failed)."
       - run: npm run build
         env:
-          VITE_BASE: /playbook-dashboard/
+          VITE_BASE: /
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

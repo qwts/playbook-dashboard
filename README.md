@@ -69,8 +69,14 @@ over emitting privileged detail.
 
 ## Deploy
 
-GitHub Actions builds the site and deploys to GitHub Pages. Intended production
-hostname later: `dashboard.dev.zts1.com`.
+GitHub Actions builds the site and deploys to GitHub Pages at
+`https://dashboard.dev.zts1.com/`.
+
+The hostname is a Route 53 `CNAME` to `qwts.github.io`, and `public/CNAME`
+carries it into every Pages artifact. GitHub Pages issues and renews the
+production certificate; no TLS private key for this hostname exists in this
+repository. Because the site is served from the domain root, the production
+build sets `VITE_BASE: /` rather than the project-site subpath.
 
 ## Governance
 
