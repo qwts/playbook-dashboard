@@ -53,9 +53,15 @@ Optional overrides (see `.env.example`):
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | HTTPS Vite dev server on port **8443** |
+| `npm test` | `node --test` over `src/**/*.test.ts` |
 | `npm run build` | Production static build to `dist/` |
 | `npm run collect` | Refresh `public/data/snapshot.json` (needs `GITHUB_TOKEN`) |
-| `npm run ci` | Typecheck + build |
+| `npm run ci` | Typecheck + test + build |
+
+Node 24+ is required: tests are TypeScript and run through Node's built-in type
+stripping, with no build step. Browser code and test code are typechecked as
+separate projects (`tsconfig.json`, `tsconfig.test.json`) so Node globals stay
+out of the bundle.
 
 ## Snapshot collection
 

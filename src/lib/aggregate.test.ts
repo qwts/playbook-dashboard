@@ -1,0 +1,184 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import type { CiStatus, RepoSnapshot, SecurityCounts, Snapshot } from '../types/snapshot.ts';
+import {
+  boolLabel,
+  ciLabel,
+  countByStatus,
+  countCiFailing,
+  countMissingCi,
+  formatRelative,
+  isSnapshotStale,
+  sumOpenSecurity,
+  visibleRepos,
+} from './aggregate.ts';
+
+const NO_CI: CiStatus = {
+  workflowName: null,
+  conclusion: null,
+  status: null,
+  updatedAt: null,
+  htmlUrl: null,
+};
+
+function repo(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
+  return {
+    name: 'example',
+    visibility: 'public',
+    status: 'active',
+    sharedCi: false,
+    codexSyncEnabled: true,
+    delta: '',
+    note: '',
+    htmlUrl: 'https://github.com/qwts/example',
+    securityFloor: {
+      secretScanning: true,
+      pushProtection: true,
+      dependabotAlerts: true,
+      privateVulnerabilityReporting: true,
+      codeqlConfigured: true,
+      defaultBranchRuleset: true,
+    },
+    security: { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0 },
+    ci: { ...NO_CI },
+    ...overrides,
+  };
+}
+
+function counts(overrides: Partial<SecurityCounts> = {}): SecurityCounts {
+  return { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0, ...overrides };
+}
+
+function snapshot(repos: RepoSnapshot[]): Snapshot {
+  return {
+    schemaVersion: 1,
+    generatedAt: '2026-07-26T12:00:00.000Z',
+    source: {
+      account: 'qwts',
+      manifestRepo: 'qwts/playbook-engineering',
+      manifestPath: 'governance/repos.json',
+    },
+    repos,
+  };
+}
+
+test('retired repos leave the fleet view but stay in the manifest', () => {
+  const repos = [
+    repo({ name: 'active-one' }),
+    repo({ name: 'onboarding-one', status: 'onboarding' }),
+    repo({ name: 'retired-one', status: 'retired' }),
+  ];
+
+  const visible = visibleRepos(snapshot(repos));
+
+  assert.deepEqual(
+    visible.map((r) => r.name),
+    ['active-one', 'onboarding-one'],
+  );
+});
+
+test('status counts separate active from onboarding', () => {
+  const repos = [
+    repo({ status: 'active' }),
+    repo({ status: 'active' }),
+    repo({ status: 'onboarding' }),
+  ];
+
+  assert.equal(countByStatus(repos, 'active'), 2);
+  assert.equal(countByStatus(repos, 'onboarding'), 1);
+  assert.equal(countByStatus(repos, 'retired'), 0);
+});
+
+test('open security totals every alert type across the fleet', () => {
+  const repos = [
+    repo({ security: counts({ dependabotOpen: 6 }) }),
+    repo({ security: counts({ codeScanningOpen: 1, secretScanningOpen: 2 }) }),
+  ];
+
+  assert.equal(sumOpenSecurity(repos), 9);
+  assert.equal(sumOpenSecurity([]), 0);
+});
+
+test(
+  'a repo with unreadable counts is not reported as a clean zero',
+  { todo: 'tracked in qwts/playbook-dashboard#3' },
+  () => {
+    const unknown = repo({ security: counts({ dependabotOpen: null }) });
+
+    assert.notEqual(sumOpenSecurity([unknown]), 0);
+  },
+);
+
+test('CI failures count, but pending and unbuilt repos do not', () => {
+  const repos = [
+    repo({ name: 'green', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'success', status: 'completed' } }),
+    repo({ name: 'red', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'failure', status: 'completed' } }),
+    repo({ name: 'cancelled', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'cancelled', status: 'completed' } }),
+    repo({ name: 'running', ci: { ...NO_CI, workflowName: 'CI', conclusion: null, status: 'in_progress' } }),
+    repo({ name: 'queued', ci: { ...NO_CI, workflowName: 'CI', conclusion: null, status: 'queued' } }),
+    repo({ name: 'no-ci' }),
+  ];
+
+  assert.equal(countCiFailing(repos), 2);
+});
+
+test('a repo with no workflows is missing CI, not failing it', () => {
+  const repos = [
+    repo({ name: 'no-ci' }),
+    repo({ name: 'green', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'success', status: 'completed' } }),
+  ];
+
+  assert.equal(countMissingCi(repos), 1);
+  assert.equal(countCiFailing(repos), 0);
+});
+
+test('a snapshot goes stale after a day', () => {
+  const now = Date.parse('2026-07-26T12:00:00.000Z');
+  const hoursAgo = (h: number) => new Date(now - h * 60 * 60 * 1000).toISOString();
+
+  assert.equal(isSnapshotStale(hoursAgo(23), now), false);
+  assert.equal(isSnapshotStale(hoursAgo(25), now), true);
+});
+
+test('an unparseable timestamp is treated as stale rather than fresh', () => {
+  assert.equal(isSnapshotStale('not a date', Date.parse('2026-07-26T12:00:00.000Z')), true);
+});
+
+test('relative time scales from seconds to days', () => {
+  const now = Date.parse('2026-07-26T12:00:00.000Z');
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+
+  assert.equal(formatRelative(ago(30_000), now), '30s ago');
+  assert.equal(formatRelative(ago(5 * 60_000), now), '5m ago');
+  assert.equal(formatRelative(ago(3 * 60 * 60_000), now), '3h ago');
+  assert.equal(formatRelative(ago(5 * 24 * 60 * 60_000), now), '5d ago');
+});
+
+test('a missing or unparseable timestamp renders as an em dash', () => {
+  const now = Date.parse('2026-07-26T12:00:00.000Z');
+
+  assert.equal(formatRelative(null, now), '—');
+  assert.equal(formatRelative('not a date', now), '—');
+});
+
+test('security-floor booleans distinguish off from unknown', () => {
+  assert.equal(boolLabel(true), 'on');
+  assert.equal(boolLabel(false), 'off');
+  assert.equal(boolLabel(null), '?');
+});
+
+test('CI labels name the state a reader has to act on', () => {
+  assert.equal(ciLabel(repo()), 'no CI');
+  assert.equal(
+    ciLabel(repo({ ci: { ...NO_CI, workflowName: 'CI', conclusion: null, status: 'in_progress' } })),
+    'running',
+  );
+  assert.equal(
+    ciLabel(repo({ ci: { ...NO_CI, workflowName: 'CI', conclusion: 'success', status: 'completed' } })),
+    'success',
+  );
+  assert.equal(
+    ciLabel(repo({ ci: { ...NO_CI, workflowName: 'CI', conclusion: 'failure', status: 'completed' } })),
+    'failure',
+  );
+});
