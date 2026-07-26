@@ -18,7 +18,7 @@ Local HTTPS uses the shared certs under `~/.quorum/certs` (certificate CN
 
 | Setting | Value |
 | --- | --- |
-| URL | `https://local.dev.zts1.com:8443/playbook-dashboard/` |
+| URL | `https://local.dev.zts1.com:8443/` |
 | Port | **8443** (not 443) |
 | Cert | `~/.quorum/certs/fullchain.pem` |
 | Key | `~/.quorum/certs/key.pem` (encrypted) |
@@ -39,7 +39,7 @@ Point the cert hostname at loopback (once):
 ```bash
 npm install
 npm run dev
-# open https://local.dev.zts1.com:8443/playbook-dashboard/
+# open https://local.dev.zts1.com:8443/
 ```
 
 Optional overrides (see `.env.example`):
@@ -47,6 +47,7 @@ Optional overrides (see `.env.example`):
 - `DASHBOARD_DEV_PORT` — default `8443`
 - `DASHBOARD_DEV_BIND` — default `127.0.0.1` (listen address)
 - `DASHBOARD_TLS_CERTS_DIR` — default `~/.quorum/certs`
+- `VITE_BASE` — default `/`; override only for a project-page deployment
 
 ## Scripts
 

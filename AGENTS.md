@@ -32,7 +32,7 @@ The encrypted key passphrase is loaded only through the environment variable
 `DASHBOARD_TLS_KEY_PASSPHRASE` — never hardcode or log it. `scripts/dev.mjs`
 reads `~/.quorum/certs/key.passphrase` (or `DASHBOARD_TLS_KEY_PASSPHRASE_FILE`)
 into that env var when unset. Bind `127.0.0.1`, browse
-`https://local.dev.zts1.com:8443/playbook-dashboard/` (port **8443**, not 443).
+`https://local.dev.zts1.com:8443/` (port **8443**, not 443).
 
 **Redaction contract.** Collector and UI share the `Snapshot` schema in
 `src/types/snapshot.ts`. Prefer failing closed (null counts) over leaking
