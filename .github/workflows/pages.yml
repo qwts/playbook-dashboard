@@ -23,11 +23,17 @@ jobs:
   # asserting this repository's identity.
   collect:
     runs-on: ubuntu-latest
-    # Not a deployment — this job declares no `url` and reports none. The
-    # environment is here for its branch policy, which is main-only, and which
-    # was doing unadvertised security work before this workflow was split: it
-    # sat on the single collect-and-deploy job, so a run from any other ref was
-    # refused before its first step and the PAT never reached a runner.
+    # Declares no `url`, so it reports no site. It does still create a
+    # `github-pages` deployment record — GitHub creates one before evaluating
+    # the branch policy, then fails it — so `main` sees two records per run
+    # rather than one. Cosmetic: `collect` runs first, so `deploy`'s record
+    # stays the latest and remains the Active deployment.
+    #
+    # The environment is here only for its branch policy, which is main-only,
+    # and which was doing unadvertised security work before this workflow was
+    # split: it sat on the single collect-and-deploy job, so a run from any
+    # other ref was refused before its first step and the PAT never reached a
+    # runner.
     #
     # Splitting the jobs moved that gate onto `deploy` alone and left the
     # credential reachable from any branch via workflow_dispatch — write access
