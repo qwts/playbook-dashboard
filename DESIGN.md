@@ -66,6 +66,26 @@ reached by default, and this repository's stated posture is to fail closed.
 **Consequence.** Until the manifest carries `publish: true`, the collector
 publishes nothing. The manifest must be updated before this ships to Pages.
 
+**A snapshot may state what it is; it may not assert what the fleet is.**
+`withheld` is therefore `number | null`, and the committed fixture states
+`null`. The fixture is the fallback deployed whenever collection fails —
+`continue-on-error` on the collect step means an unset token produces a fully
+green run that publishes it — and it has no knowledge of the fleet it would be
+describing. A fixture claiming `withheld: 0` renders "published N of N
+governed" in green: a positive claim of completeness made by a file that cannot
+know. Unknown renders as unknown.
+
+**Nothing about a withheld repo reaches a log.** Not its name, not its request
+path, not GitHub's response body, and not its *position paired with an
+outcome* — candidate order comes from a public manifest, so position plus
+outcome re-identifies the repo the gates just withheld. Actions logs on a
+public repository are public. The collector logs bare progress positions and
+aggregates every failure into sorted, tallied counts.
+
+This last rule generalizes beyond the code that introduced it: any logic
+written while every governed repo was published may be wrong now that some are
+not, whether or not it appears in the diff that introduced withholding.
+
 ## Decision: manifest free text
 
 `note` is **not published**. It was collected and written into the artifact but

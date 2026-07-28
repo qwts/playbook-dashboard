@@ -220,9 +220,44 @@ async function loadManifest() {
   return JSON.parse(raw);
 }
 
+/**
+ * Pre-gate repo lookup.
+ *
+ * Runs before gate 2 has decided whether this repo may be named at all, so it
+ * must never put the name, the request path, or GitHub's response body into an
+ * error: `main().catch()` prints those, and Actions logs on a public repository
+ * are public. `ghJson` embeds all three, which is correct for every *post*-gate
+ * call and wrong here.
+ *
+ * Any failure is withholding, not an exception. If visibility cannot be
+ * determined, the repo is not published. Statuses accumulate into `failures`
+ * for an aggregated summary — never logged next to the loop's position counter,
+ * because the manifest is public and pairing position with outcome would
+ * re-identify the repo the gate just withheld.
+ */
+export async function fetchRepoForGate(name, failures = []) {
+  let response;
+  try {
+    response = await gh(`/repos/${ACCOUNT}/${name}`);
+  } catch {
+    failures.push('network');
+    return null;
+  }
+  if (!response.ok) {
+    failures.push(String(response.status));
+    return null;
+  }
+  try {
+    return await response.json();
+  } catch {
+    failures.push('malformed');
+    return null;
+  }
+}
+
 /** Returns the redacted row, or `null` if the repo must not be published. */
-async function collectRepo(entry) {
-  const detail = await ghJson(`/repos/${ACCOUNT}/${entry.name}`);
+async function collectRepo(entry, failures) {
+  const detail = await fetchRepoForGate(entry.name, failures);
   // Withheld before any alert or CI call: nothing we do not publish is fetched.
   // The name is deliberately not logged — see the summary in main().
   if (!isObservedPublic(detail)) return null;
@@ -269,13 +304,18 @@ async function main() {
   const candidates = governed.filter(isPublishable);
 
   const repos = [];
+  const gateFailures = [];
   for (const [index, entry] of candidates.entries()) {
     // Position, not identity. Gate 2 runs inside collectRepo, so a name logged
     // here would be published *before* we know whether the repo passes it — and
     // the repo that fails is exactly the one whose name must not appear in an
     // Actions log. The candidate count is already public via `withheld`.
+    //
+    // Nothing about this repo's *outcome* may be logged here either: candidate
+    // order comes from a public manifest, so position plus outcome re-identifies
+    // it. Outcomes are aggregated below instead.
     warn(`collect ${index + 1}/${candidates.length}`);
-    const row = await collectRepo(entry);
+    const row = await collectRepo(entry, gateFailures);
     if (row) repos.push(row);
   }
 
@@ -288,6 +328,15 @@ async function main() {
     `withheld ${withheld} of ${governed.length} governed repos ` +
       `(${notOptedIn} without publish: true, ${notObservedPublic} not observed public)`,
   );
+  if (gateFailures.length) {
+    // Sorted and tallied, so the order tells you nothing about which candidate
+    // produced which status.
+    const tally = [...gateFailures.reduce((m, s) => m.set(s, (m.get(s) ?? 0) + 1), new Map())]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([status, count]) => `${status}x${count}`)
+      .join(', ');
+    warn(`repo lookups that failed before the visibility gate: ${tally}`);
+  }
   if (repos.length === 0) {
     warn('WARNING: no repos passed the publication gates — the dashboard will render empty');
   }

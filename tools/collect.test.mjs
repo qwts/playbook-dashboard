@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { MAX_DELTA_LENGTH, isObservedPublic, isPublishable, sanitizeDelta } from './collect.mjs';
+import {
+  MAX_DELTA_LENGTH,
+  fetchRepoForGate,
+  isObservedPublic,
+  isPublishable,
+  sanitizeDelta,
+} from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
 
@@ -83,6 +89,73 @@ test('a missing or non-string delta becomes an empty string', () => {
 //
 // `sanitizeDelta` logging its `repoName` is deliberately not matched: it only
 // runs for repos that have already passed both gates, so their names are public.
+/** Runs `fn` with fetch and stderr captured, so nothing escapes to the console. */
+async function withCapturedIo(respond, fn) {
+  const written = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  const realFetch = globalThis.fetch;
+  const realToken = process.env.GITHUB_TOKEN;
+
+  process.stderr.write = (chunk) => (written.push(String(chunk)), true);
+  globalThis.fetch = respond;
+  process.env.GITHUB_TOKEN = 'test-token-not-a-real-credential';
+  try {
+    return { result: await fn(), stderr: written.join('') };
+  } finally {
+    process.stderr.write = realWrite;
+    globalThis.fetch = realFetch;
+    if (realToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = realToken;
+  }
+}
+
+// The pre-gate lookup is the one call made before we know whether the repo may
+// be named. `ghJson` would throw with the path and 200 bytes of GitHub's body,
+// and main().catch() prints that to a public Actions log.
+test('a pre-gate lookup failure never names the repo, its path, or the response body', async () => {
+  for (const status of [403, 500, 502]) {
+    const { result, stderr } = await withCapturedIo(
+      async () =>
+        new Response(JSON.stringify({ message: 'Must have admin rights to secret-repo' }), {
+          status,
+        }),
+      () => fetchRepoForGate('secret-repo', []),
+    );
+
+    assert.equal(result, null, `HTTP ${status} must withhold rather than throw`);
+    assert.doesNotMatch(stderr, /secret-repo/u, `HTTP ${status} leaked the repo name`);
+    assert.doesNotMatch(stderr, /admin rights/u, `HTTP ${status} leaked the response body`);
+  }
+});
+
+test('a pre-gate network failure withholds instead of propagating', async () => {
+  const { result, stderr } = await withCapturedIo(
+    async () => {
+      throw new Error('getaddrinfo ENOTFOUND api.github.com while fetching secret-repo');
+    },
+    () => fetchRepoForGate('secret-repo', []),
+  );
+
+  assert.equal(result, null);
+  assert.doesNotMatch(stderr, /secret-repo/u);
+});
+
+test('pre-gate failures are recorded as bare statuses, never as identities', async () => {
+  const failures = [];
+  await withCapturedIo(
+    async () => new Response('{}', { status: 403 }),
+    () => fetchRepoForGate('secret-repo', failures),
+  );
+  await withCapturedIo(
+    async () => {
+      throw new Error('offline');
+    },
+    () => fetchRepoForGate('another-secret', failures),
+  );
+
+  assert.deepEqual(failures, ['403', 'network']);
+});
+
 test('no log line interpolates a manifest entry name', () => {
   const offenders = [...SOURCE.matchAll(/warn\([^;]*?\$\{entry\.name\}/gu)].map((m) => m[0]);
 
