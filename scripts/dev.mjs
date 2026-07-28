@@ -64,7 +64,7 @@ function main() {
 
   const port = process.env.DASHBOARD_DEV_PORT;
   console.log(
-    `Local HTTPS → https://${BROWSE_HOST}:${port}/playbook-dashboard/ (bound ${process.env.DASHBOARD_DEV_BIND})`,
+    `Local HTTPS → https://${BROWSE_HOST}:${port}/ (bound ${process.env.DASHBOARD_DEV_BIND})`,
   );
 
   const viteBin = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');

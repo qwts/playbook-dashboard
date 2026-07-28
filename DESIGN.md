@@ -25,7 +25,7 @@ GitHub Pages. No authentication on day 1 — privacy is enforced by redaction.
 
 ## Local development
 
-- Browse URL: `https://local.dev.zts1.com:8443/playbook-dashboard/`
+- Browse URL: `https://local.dev.zts1.com:8443/`
 - Listen bind: `127.0.0.1`
 - Port **8443** (documented; not 443)
 - TLS material from `~/.quorum/certs`, passphrase via `DASHBOARD_TLS_KEY_PASSPHRASE`

@@ -18,7 +18,7 @@ Local HTTPS uses the shared certs under `~/.quorum/certs` (certificate CN
 
 | Setting | Value |
 | --- | --- |
-| URL | `https://local.dev.zts1.com:8443/playbook-dashboard/` |
+| URL | `https://local.dev.zts1.com:8443/` |
 | Port | **8443** (not 443) |
 | Cert | `~/.quorum/certs/fullchain.pem` |
 | Key | `~/.quorum/certs/key.pem` (encrypted) |
@@ -39,7 +39,7 @@ Point the cert hostname at loopback (once):
 ```bash
 npm install
 npm run dev
-# open https://local.dev.zts1.com:8443/playbook-dashboard/
+# open https://local.dev.zts1.com:8443/
 ```
 
 Optional overrides (see `.env.example`):
@@ -81,8 +81,10 @@ GitHub Actions builds the site and deploys to GitHub Pages at
 The hostname is a Route 53 `CNAME` to `qwts.github.io`, and `public/CNAME`
 carries it into every Pages artifact. GitHub Pages issues and renews the
 production certificate; no TLS private key for this hostname exists in this
-repository. Because the site is served from the domain root, the production
-build sets `VITE_BASE: /` rather than the project-site subpath.
+repository. Because the site is served from the domain root, `/` is the default base
+for both local dev and the production build; `VITE_BASE` overrides it for a
+project-site deployment under `qwts.github.io/<repo>/`. `pages.yml` still sets
+it explicitly, so the deployed base is stated rather than inherited.
 
 ## Governance
 
