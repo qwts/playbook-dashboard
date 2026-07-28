@@ -117,10 +117,19 @@ async function fetchSecurityFloor(repo) {
     codeqlConfigured = null;
   }
 
+  // Reads through `gh` rather than `ghJson`, matching the two calls above.
+  // `ghJson` throws on any non-OK status except 404, so a 403 here — exactly
+  // what a token without Administration: Read returns — aborts the entire
+  // collection rather than leaving one boolean unknown. A posture field the
+  // token cannot read is unknown, not fatal: the floor bit renders `?` and
+  // every other repo still collects.
   let defaultBranchRuleset = null;
-  const rulesets = await ghJson(`/repos/${ACCOUNT}/${repo}/rulesets`);
-  if (Array.isArray(rulesets)) {
-    defaultBranchRuleset = rulesets.some((row) => row.enforcement === 'active');
+  const rulesets = await gh(`/repos/${ACCOUNT}/${repo}/rulesets`);
+  if (rulesets.ok) {
+    const body = await rulesets.json().catch(() => null);
+    if (Array.isArray(body)) {
+      defaultBranchRuleset = body.some((row) => row.enforcement === 'active');
+    }
   }
 
   return {
