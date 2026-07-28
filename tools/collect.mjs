@@ -43,16 +43,159 @@ function token() {
   return value;
 }
 
+/** No request may outlive this. A hung endpoint fails; it does not wait. */
+export const REQUEST_TIMEOUT_MS = 10_000;
+/** Bounded: a rate limit outlasting this is reported, not waited out. */
+export const MAX_ATTEMPTS = 3;
+export const MAX_BACKOFF_MS = 30_000;
+
+/**
+ * Rate-limited and forbidden both arrive as 403 and previously collapsed into
+ * the same `null`. They mean opposite things: one is transient and worth
+ * retrying, the other is a permission the token does not have and never will
+ * on this run.
+ *
+ * GitHub signals a limit three ways — 429, a primary limit with
+ * `x-ratelimit-remaining: 0`, or a secondary limit carrying `retry-after`.
+ */
+export function isRateLimited(response) {
+  if (!response) return false;
+  if (response.status === 429) return true;
+  if (response.status !== 403) return false;
+  return (
+    response.headers?.get('x-ratelimit-remaining') === '0' ||
+    response.headers?.get('retry-after') !== null
+  );
+}
+
+/**
+ * How long the server actually asked us to wait, or `null` if it did not say.
+ *
+ * The single answer to that question, because two callers need it and a second
+ * copy of this precedence is what let them disagree.
+ *
+ * `retry-after` is a direct instruction about *this* refusal and wins.
+ * `x-ratelimit-reset` is only an answer when `x-ratelimit-remaining` is `0`:
+ * the header rides on every response, and on a secondary limit or a bare 429
+ * it is just when the hourly window rolls over — up to an hour out, and
+ * nothing to do with why this request was refused. Reading it unconditionally
+ * turns an unrelated header into a delay, and worse, into a reason to stop.
+ */
+function serverRetryHintMs(response, now) {
+  const retryAfter = Number(response?.headers?.get('retry-after'));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
+  if (response?.headers?.get('x-ratelimit-remaining') !== '0') return null;
+  const reset = Number(response?.headers?.get('x-ratelimit-reset'));
+  if (!Number.isFinite(reset) || reset <= 0) return null;
+  const waitMs = reset * 1000 - now;
+  return waitMs > 0 ? waitMs : null;
+}
+
+/** Honours the server's own guidance before falling back to exponential backoff. */
+export function retryDelayMs(response, attempt, now = Date.now()) {
+  const hint = serverRetryHintMs(response, now);
+  if (hint !== null) return Math.min(hint, MAX_BACKOFF_MS);
+  return Math.min(2 ** attempt * 1000, MAX_BACKOFF_MS);
+}
+
+/** Aggregate only — never which repo. Counts, like everything else published. */
+const health = { denied: 0, rateLimited: 0, failed: 0 };
+
+export function collectionHealth() {
+  return { ...health };
+}
+
+export function resetCollectionHealth() {
+  health.denied = 0;
+  health.rateLimited = 0;
+  health.failed = 0;
+}
+
+/**
+ * When a limit will not lift inside this run's patience.
+ *
+ * A primary rate limit is account-wide, not per-endpoint: once it fires, every
+ * remaining request is limited too, and each would independently spend its own
+ * retry budget. Nine repos at eight requests each turns a bounded per-request
+ * wait into tens of minutes — on an hourly schedule, in a concurrency group
+ * that queues rather than supersedes.
+ *
+ * If the wait will outlast the run's patience, retrying is not resilience; it
+ * is spending the run. Stop retrying and let the counts be honestly unknown.
+ *
+ * A wait the server asked for and we are willing to sit out must *not* latch
+ * this. On this workload — roughly 73 requests an hour against a budget of
+ * 5,000 — a secondary limit from burst concurrency is the failure that will
+ * actually happen, and it is the one worth waiting the few seconds for.
+ */
+let rateLimitedUntilMs = null;
+
+export function resetRateLimitWindow() {
+  rateLimitedUntilMs = null;
+}
+
+function noteRateLimitWindow(response, now = Date.now()) {
+  const hint = serverRetryHintMs(response, now);
+  if (hint !== null && hint > MAX_BACKOFF_MS) rateLimitedUntilMs = now + hint;
+}
+
+export function rateLimitWindowIsOpen(now = Date.now()) {
+  return rateLimitedUntilMs === null || now >= rateLimitedUntilMs;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function gh(pathname, { token: auth, accept } = {}) {
-  const response = await fetch(`${API}${pathname}`, {
-    headers: {
-      Accept: accept || 'application/vnd.github+json',
-      Authorization: `Bearer ${auth || token()}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'playbook-dashboard-collect',
-    },
-  });
-  return response;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(`${API}${pathname}`, {
+        // Without a deadline a single hung request holds the job for the
+        // workflow's whole timeout, and every scheduled run behind it queues.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: {
+          Accept: accept || 'application/vnd.github+json',
+          Authorization: `Bearer ${auth || token()}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'playbook-dashboard-collect',
+        },
+      });
+    } catch (error) {
+      // Timeout or transport failure. Retry, then give the caller a synthetic
+      // 503 so every call site keeps its existing not-ok handling.
+      lastError = error;
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await sleep(Math.min(2 ** attempt * 1000, MAX_BACKOFF_MS));
+        continue;
+      }
+      // A synthetic response rather than a rethrow. Most call sites do not
+      // catch, and a throw from here would abort the whole collection over one
+      // timed-out request — the same defect as routing /rulesets through
+      // ghJson. `health.failed` is where the distinction is kept.
+      health.failed += 1;
+      return new Response(null, { status: 503, statusText: 'request failed or timed out' });
+    }
+
+    if (isRateLimited(response)) {
+      noteRateLimitWindow(response);
+      // Retry only while the window might still reopen within this run.
+      if (attempt < MAX_ATTEMPTS - 1 && rateLimitWindowIsOpen()) {
+        await sleep(retryDelayMs(response, attempt));
+        continue;
+      }
+      health.rateLimited += 1;
+      return response;
+    }
+    if (response.status === 403) health.denied += 1;
+    if (response.status >= 500) health.failed += 1;
+    return response;
+  }
+
+  // Unreachable: every branch on the final attempt returns. Kept as an
+  // explicit assertion rather than a silent fall-through to undefined.
+  throw lastError ?? new Error(`exhausted ${MAX_ATTEMPTS} attempts without returning`);
 }
 
 async function ghJson(pathname, options) {
@@ -66,7 +209,7 @@ async function ghJson(pathname, options) {
   return response.json();
 }
 
-async function countOpenAlerts(repo, kind) {
+export async function countOpenAlerts(repo, kind) {
   const paths = {
     dependabot: `/repos/${ACCOUNT}/${repo}/dependabot/alerts?state=open&per_page=1`,
     codeScanning: `/repos/${ACCOUNT}/${repo}/code-scanning/alerts?state=open&per_page=1`,
@@ -79,11 +222,17 @@ async function countOpenAlerts(repo, kind) {
   };
 
   const response = await gh(paths[kind], { accept: accepts[kind] });
-  if (response.status === 403 || response.status === 404) return null;
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`${paths[kind]} → ${response.status}: ${body.slice(0, 200)}`);
-  }
+  // Any unsuccessful read is an unknown count, not a fatal error. This used to
+  // map 403/404 to null and throw on everything else — which included the 429
+  // that `gh` returns once its retries are exhausted, i.e. exactly the case the
+  // rate-limit handling exists for. The run died before writeFileSync, so
+  // `collection.rateLimited` was incremented and then discarded.
+  //
+  // `collectionHealth()` carries the reason now, and #3 made a null count
+  // render `?` rather than a green zero, so there is nothing left for the
+  // throw to protect. Dropping it also stops 200 bytes of GitHub's response
+  // body reaching a public Actions log (#23).
+  if (!response.ok) return null;
 
   const link = response.headers.get('link') || '';
   const last = [...link.matchAll(/[?&]page=(\d+)>;\s*rel="last"/g)].pop();
@@ -93,8 +242,11 @@ async function countOpenAlerts(repo, kind) {
   return Array.isArray(rows) ? rows.length : 0;
 }
 
-async function fetchSecurityFloor(repo) {
-  const detail = await ghJson(`/repos/${ACCOUNT}/${repo}`);
+async function fetchSecurityFloor(repo, detail) {
+  // `detail` comes from the gate, which already fetched this exact endpoint and
+  // kept only `private`/`visibility`. Re-fetching cost one extra request per
+  // repo per run for a field the caller was already holding — pure pressure
+  // against the rate limit this change exists to survive.
   const analysis = detail?.security_and_analysis ?? {};
 
   let privateVulnerabilityReporting = null;
@@ -153,9 +305,14 @@ async function fetchSecurityFloor(repo) {
 }
 
 async function fetchCi(repo, defaultBranch) {
-  const runs = await ghJson(
+  // Reads through `gh`, not `ghJson`. Dropping Actions: Read returns 403, and
+  // `ghJson` throws on it — killing the whole collection over one repo's CI
+  // row. The all-null return below is exactly the right degradation and was
+  // already here; the call simply did not route to it.
+  const response = await gh(
     `/repos/${ACCOUNT}/${repo}/actions/runs?branch=${encodeURIComponent(defaultBranch)}&per_page=1`,
   );
+  const runs = response.ok ? await response.json().catch(() => null) : null;
   const run = runs?.workflow_runs?.[0];
   if (!run) {
     return {
@@ -325,7 +482,7 @@ async function collectRepo(entry, failures) {
 
   const [securityFloor, dependabotOpen, codeScanningOpen, secretScanningOpen, ci] =
     await Promise.all([
-      fetchSecurityFloor(entry.name),
+      fetchSecurityFloor(entry.name, detail),
       countOpenAlerts(entry.name, 'dependabot'),
       countOpenAlerts(entry.name, 'codeScanning'),
       countOpenAlerts(entry.name, 'secretScanning'),
@@ -407,6 +564,13 @@ async function main() {
   // Obviously broken beats plausibly wrong on a board whose whole job is posture.
   //
   // The run still fails (see pages.yml) so the blank is noticed, not just served.
+  const h = collectionHealth();
+  if (h.denied || h.rateLimited || h.failed) {
+    warn(
+      `degraded reads: ${h.denied} denied, ${h.rateLimited} rate-limited, ${h.failed} failed ` +
+        '— counts they would have filled are published as unknown, not zero',
+    );
+  }
   if (repos.length === 0) {
     warn(
       `WARNING: no repos passed the publication gates — publishing an empty snapshot. ` +
@@ -424,6 +588,10 @@ async function main() {
       manifestPath: MANIFEST_PATH,
     },
     withheld,
+    // Why reads were missing, in aggregate and never per repo. A `null` count
+    // used to mean "denied" and "rate limited" indistinguishably; the first is
+    // a permission that will not change this run, the second is transient.
+    collection: collectionHealth(),
     repos,
   };
 

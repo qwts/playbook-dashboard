@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   ALLOWED_URL_ORIGIN,
+  MAX_BACKOFF_MS,
   MAX_DELTA_LENGTH,
   fetchRepoForGate,
   isObservedPublic,
@@ -10,6 +11,14 @@ import {
   parseCodexSync,
   sanitizeDelta,
   sanitizeGithubUrl,
+  isRateLimited,
+  retryDelayMs,
+  countOpenAlerts,
+  collectionHealth,
+  resetCollectionHealth,
+  resetRateLimitWindow,
+  rateLimitWindowIsOpen,
+  MAX_ATTEMPTS,
 } from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
@@ -304,7 +313,10 @@ test('pre-gate failures are recorded as bare statuses, never as identities', asy
     () => fetchRepoForGate('another-secret', failures),
   );
 
-  assert.deepEqual(failures, ['403', 'network']);
+  // A transport failure surfaces as a synthetic 503 rather than a throw, so no
+  // call site has to catch to avoid aborting the run. Either way it is a bare
+  // status: no repo name, no path.
+  assert.deepEqual(failures, ['403', '503']);
 });
 
 test('no log line interpolates a manifest entry name', () => {
@@ -314,5 +326,240 @@ test('no log line interpolates a manifest entry name', () => {
     offenders,
     [],
     'a withheld repo must never be named in an Actions log — log position, not identity',
+  );
+});
+
+
+// --- request deadlines and rate limits (#12) -----------------------------
+
+function res(status, headers = {}) {
+  return { status, headers: { get: (k) => headers[k.toLowerCase()] ?? null } };
+}
+
+test('a rate limit is distinguished from a plain refusal', () => {
+  // Both arrive as 403 and used to collapse into the same null.
+  assert.equal(isRateLimited(res(429)), true, '429 is always a limit');
+  assert.equal(isRateLimited(res(403, { 'x-ratelimit-remaining': '0' })), true, 'primary limit');
+  assert.equal(isRateLimited(res(403, { 'retry-after': '30' })), true, 'secondary limit');
+
+  // A permission the token does not have: no limit headers.
+  assert.equal(isRateLimited(res(403)), false, 'forbidden is not rate limited');
+  assert.equal(isRateLimited(res(403, { 'x-ratelimit-remaining': '4821' })), false);
+  assert.equal(isRateLimited(res(404)), false);
+  assert.equal(isRateLimited(res(200)), false);
+  assert.equal(isRateLimited(null), false);
+});
+
+test('retry delay honours the server before falling back to backoff', () => {
+  const now = 1_000_000;
+  assert.equal(retryDelayMs(res(403, { 'retry-after': '5' }), 0, now), 5000);
+  // x-ratelimit-reset is epoch seconds, and only speaks for a *primary* limit.
+  assert.equal(
+    retryDelayMs(
+      res(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 7) }),
+      0,
+      now,
+    ),
+    7000,
+  );
+  // Neither header: exponential.
+  assert.equal(retryDelayMs(res(429), 0, now), 1000);
+  assert.equal(retryDelayMs(res(429), 2, now), 4000);
+});
+
+// x-ratelimit-reset rides on every response. Unless the budget is actually
+// spent it describes the hourly rollover, not this refusal — so it must not
+// become the delay for a limit it says nothing about.
+test('an unspent budget leaves the reset header out of the delay', () => {
+  const now = 1_000_000;
+  const hourlyRollover = String(now / 1000 + 3000);
+
+  // Secondary limit: the server's own retry-after wins over the rollover.
+  assert.equal(
+    retryDelayMs(
+      res(429, {
+        'retry-after': '5',
+        'x-ratelimit-remaining': '4837',
+        'x-ratelimit-reset': hourlyRollover,
+      }),
+      0,
+      now,
+    ),
+    5000,
+  );
+
+  // Bare 429: the server said nothing, so back off — do not read the rollover
+  // as an instruction and sit out the cap on every attempt.
+  assert.equal(
+    retryDelayMs(res(429, { 'x-ratelimit-remaining': '4837', 'x-ratelimit-reset': hourlyRollover }), 0, now),
+    1000,
+  );
+});
+
+test('a hostile or absurd delay is capped, so a run cannot be parked forever', () => {
+  const now = 1_000_000;
+  assert.equal(retryDelayMs(res(403, { 'retry-after': '86400' }), 0, now), MAX_BACKOFF_MS);
+  assert.equal(
+    retryDelayMs(
+      res(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 99999) }),
+      0,
+      now,
+    ),
+    MAX_BACKOFF_MS,
+  );
+  assert.equal(retryDelayMs(res(429), 20, now), MAX_BACKOFF_MS);
+});
+
+test('a past reset or malformed header does not produce a negative wait', () => {
+  const now = 1_000_000;
+  for (const h of [{ 'x-ratelimit-reset': String(now / 1000 - 60) }, { 'retry-after': 'soon' }, {}]) {
+    const delay = retryDelayMs(res(429, h), 0, now);
+    assert.ok(delay > 0 && delay <= MAX_BACKOFF_MS, `${JSON.stringify(h)} -> ${delay}`);
+  }
+});
+
+test('every request carries a deadline', () => {
+  assert.match(SOURCE, /AbortSignal\.timeout\(REQUEST_TIMEOUT_MS\)/u,
+    'gh() must pass an abort signal — an unbounded fetch holds the job and queues every run behind it');
+});
+
+test('CI status degrades on a denied read rather than aborting', () => {
+  const ci = SOURCE.slice(SOURCE.indexOf('async function fetchCi'), SOURCE.indexOf('export function parseCodexSync'));
+  assert.doesNotMatch(ci, /ghJson\(/u, 'actions/runs must not read through ghJson — it throws on 403');
+  assert.match(ci, /response\.ok/u);
+});
+
+test('the repo detail is fetched once, not once per consumer', () => {
+  const floor = SOURCE.slice(SOURCE.indexOf('async function fetchSecurityFloor'), SOURCE.indexOf('async function fetchCi'));
+  assert.doesNotMatch(floor, /await ghJson\(`\/repos\/\$\{ACCOUNT\}\/\$\{repo\}`\)/u,
+    'the gate already holds this response; refetching is pressure against the rate limit');
+});
+
+
+// --- an exhausted rate limit must not kill the run -----------------------
+
+function limited(status, headers = {}) {
+  return new Response('{"message":"API rate limit exceeded for user"}', { status, headers });
+}
+
+async function withStubbedFetch(respond, fn) {
+  const realFetch = globalThis.fetch;
+  const realToken = process.env.GITHUB_TOKEN;
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = () => true;
+  globalThis.fetch = respond;
+  process.env.GITHUB_TOKEN = 'test-token-not-a-real-credential';
+  resetCollectionHealth();
+  resetRateLimitWindow();
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = realFetch;
+    process.stderr.write = realWrite;
+    if (realToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = realToken;
+    resetCollectionHealth();
+    resetRateLimitWindow();
+  }
+}
+
+// The scenario this PR exists for: a limit outlasting the bounded retry. It
+// used to reach a `throw`, which killed the collection before writeFileSync —
+// so `collection.rateLimited`, the field added to explain the failure, was
+// incremented and then discarded in the same run.
+test('a rate limit that outlasts retries yields an unknown count, not a dead run', async () => {
+  for (const status of [429, 403]) {
+    const count = await withStubbedFetch(
+      async () => limited(status, { 'x-ratelimit-remaining': '0' }),
+      () => countOpenAlerts('example', 'dependabot'),
+    );
+    assert.equal(count, null, `HTTP ${status} must be an unknown count`);
+  }
+});
+
+test('a 5xx on an alert endpoint is unknown, not fatal', async () => {
+  const count = await withStubbedFetch(
+    async () => new Response('upstream exploded', { status: 500 }),
+    () => countOpenAlerts('example', 'codeScanning'),
+  );
+  assert.equal(count, null);
+});
+
+test('an exhausted limit is still counted, so the reason survives', async () => {
+  const health = await withStubbedFetch(
+    async () => limited(429, { 'x-ratelimit-remaining': '0' }),
+    async () => {
+      await countOpenAlerts('example', 'secretScanning');
+      return collectionHealth();
+    },
+  );
+  assert.equal(health.rateLimited, 1, 'the run must be able to say why the count is unknown');
+});
+
+// --- the retry budget is bounded across the run, not just per request ----
+
+test('a primary limit resetting beyond the run closes the window for everyone', () => {
+  resetRateLimitWindow();
+  assert.equal(rateLimitWindowIsOpen(), true, 'open before any limit is seen');
+});
+
+test('a far-future reset stops further retrying instead of re-spending the budget', async () => {
+  const farFuture = Math.floor(Date.now() / 1000) + 3600;
+  let calls = 0;
+  await withStubbedFetch(
+    async () => {
+      calls += 1;
+      return limited(429, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(farFuture) });
+    },
+    async () => {
+      await countOpenAlerts('example', 'dependabot');
+      const first = calls;
+      // A second call in the same run must not spend another full budget:
+      // a primary limit is account-wide, so the window is already known shut.
+      await countOpenAlerts('example', 'codeScanning');
+      assert.equal(calls - first, 1, 'the second request should not retry at all');
+    },
+  );
+  assert.ok(calls <= MAX_ATTEMPTS + 1, `expected the budget to be spent once, saw ${calls} calls`);
+});
+
+// The mirror of the test above, and the realistic one. This workload runs
+// roughly 73 requests an hour against a budget of 5,000, so the primary limit
+// is effectively unreachable; a secondary limit from burst concurrency is what
+// will actually fire. The window closed on `x-ratelimit-reset` unconditionally,
+// and that header is present on every response — so the breaker was tripped by
+// the shape it cannot reason about and never by the one it was built for.
+test('a secondary limit is waited out, not treated as the budget running dry', async () => {
+  const hourlyRollover = Math.floor(Date.now() / 1000) + 50 * 60;
+  let calls = 0;
+  const count = await withStubbedFetch(
+    async () => {
+      calls += 1;
+      if (calls > 1) return new Response('[]', { status: 200 });
+      // Budget nearly untouched; the server asked for one second.
+      return limited(429, {
+        'retry-after': '1',
+        'x-ratelimit-remaining': '4837',
+        'x-ratelimit-reset': String(hourlyRollover),
+      });
+    },
+    async () => {
+      const result = await countOpenAlerts('example', 'dependabot');
+      assert.equal(rateLimitWindowIsOpen(), true, 'a five-second wait is not a spent budget');
+      return result;
+    },
+  );
+
+  assert.equal(calls, 2, 'the second attempt is the whole point of retry-after');
+  assert.equal(count, 0, 'a waited-out limit yields a real count, not an unknown');
+});
+
+test('a wait longer than the run will sit out closes the window, whatever its shape', async () => {
+  await withStubbedFetch(
+    async () => limited(429, { 'retry-after': '900', 'x-ratelimit-remaining': '4837' }),
+    async () => {
+      await countOpenAlerts('example', 'dependabot');
+      assert.equal(rateLimitWindowIsOpen(), false, 'fifteen minutes outlasts the run');
+    },
   );
 });

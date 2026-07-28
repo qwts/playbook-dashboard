@@ -18,7 +18,26 @@ export type Snapshot = {
    * *is*; it may not assert what the fleet *is*.
    */
   withheld: number | null;
+  /**
+   * Why reads were missing, in aggregate — never which repo.
+   *
+   * A `null` count means the collector could not read it, but not why. Denied
+   * is a permission that will not change during the run; rate-limited is
+   * transient and was retried first. Collapsing them loses the difference
+   * between "fix the token" and "wait".
+   */
+  collection: CollectionHealth;
   repos: RepoSnapshot[];
+};
+
+/** Counts only, fleet-wide. Never attributed to a repository. */
+export type CollectionHealth = {
+  /** GitHub refused: the token lacks the permission. */
+  denied: number;
+  /** GitHub rate-limited, after bounded retry was exhausted. */
+  rateLimited: number;
+  /** Timed out, or failed transport-side. */
+  failed: number;
 };
 
 export type RepoStatus = 'active' | 'onboarding' | 'retired';
