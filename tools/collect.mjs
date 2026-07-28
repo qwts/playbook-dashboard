@@ -162,7 +162,7 @@ async function fetchCi(repo, defaultBranch) {
     conclusion: run.conclusion ?? null,
     status: run.status ?? null,
     updatedAt: run.updated_at ?? null,
-    htmlUrl: run.html_url ?? null,
+    htmlUrl: sanitizeGithubUrl(run.html_url),
   };
 }
 
@@ -186,6 +186,42 @@ export function parseCodexSync(entry) {
     if (typeof codexSync.enabled === 'boolean') return codexSync.enabled;
   }
   return null;
+}
+
+/** The only origin the published dashboard will ever emit a link to. */
+export const ALLOWED_URL_ORIGIN = 'https://github.com';
+
+/**
+ * A URL reaches the snapshot only if it is `https:` at exactly
+ * `https://github.com`. Everything else becomes `null`, and the UI renders
+ * unlinked text.
+ *
+ * Validated here, where the value enters, rather than at render time. React
+ * escapes text content but does not sanitize `href` schemes, so a `javascript:`
+ * URL in an `href` is script execution on click. In practice these values come
+ * from the GitHub API and are fine — but nothing enforced that, and the
+ * property lived entirely in an upstream service's behaviour.
+ *
+ * Rejects embedded credentials: `https://user:pass@github.com` has an origin of
+ * exactly `https://github.com`, so an origin check alone passes it through while
+ * the rendered href still carries the credentials — a phishing shape.
+ */
+export function sanitizeGithubUrl(value) {
+  if (typeof value !== 'string' || value === '') return null;
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== 'https:') return null;
+  if (url.origin !== ALLOWED_URL_ORIGIN) return null;
+  if (url.username || url.password) return null;
+
+  // The parsed, normalized form — not the input string.
+  return url.href;
 }
 
 /**
@@ -294,7 +330,11 @@ async function collectRepo(entry, failures) {
     sharedCi: Boolean(entry.sharedCi),
     codexSyncEnabled: parseCodexSync(entry),
     delta: sanitizeDelta(entry.delta, entry.name),
-    htmlUrl: detail.html_url || `https://github.com/${ACCOUNT}/${entry.name}`,
+    // No hand-built fallback. The previous `|| https://github.com/${ACCOUNT}/${entry.name}`
+    // constructed a URL from an untrusted manifest name for a case that cannot
+    // happen post-gate — gate 2 already required a readable repo response. An
+    // unlinked repo name is a better answer than a guessed link.
+    htmlUrl: sanitizeGithubUrl(detail.html_url),
     securityFloor,
     security: {
       dependabotOpen,

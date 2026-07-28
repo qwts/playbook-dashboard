@@ -23,6 +23,21 @@ type LoadState =
   | { status: 'error'; message: string }
   | { status: 'ready'; snapshot: Snapshot };
 
+/**
+ * A repo name, linked only when the collector published a validated URL.
+ *
+ * `rel="noreferrer"` on every outbound anchor so the dashboard's own URL is not
+ * sent to the destination.
+ */
+function RepoLink({ repo }: { repo: RepoSnapshot }) {
+  if (!repo.htmlUrl) return <span className="repo-link">{repo.name}</span>;
+  return (
+    <a className="repo-link" href={repo.htmlUrl} rel="noreferrer">
+      {repo.name}
+    </a>
+  );
+}
+
 function toneForCi(repo: RepoSnapshot): Tone {
   const label = ciLabel(repo);
   if (label === 'success') return 'ok';
@@ -200,9 +215,7 @@ export function App() {
                   return (
                     <tr key={repo.name}>
                       <td>
-                        <a className="repo-link" href={repo.htmlUrl}>
-                          {repo.name}
-                        </a>
+                        <RepoLink repo={repo} />
                       </td>
                       <td>
                         <span className="badge" data-tone={toneForCount(repo.security.dependabotOpen)}>
@@ -268,9 +281,7 @@ export function App() {
               {repos.map((repo) => (
                 <tr key={repo.name}>
                   <td>
-                    <a className="repo-link" href={repo.htmlUrl}>
-                      {repo.name}
-                    </a>
+                    <RepoLink repo={repo} />
                   </td>
                   <td>
                     <span
@@ -319,14 +330,12 @@ export function App() {
               {repos.map((repo) => (
                 <tr key={repo.name}>
                   <td>
-                    <a className="repo-link" href={repo.htmlUrl}>
-                      {repo.name}
-                    </a>
+                    <RepoLink repo={repo} />
                   </td>
                   <td className="muted">{repo.ci.workflowName ?? '—'}</td>
                   <td>
                     {repo.ci.htmlUrl ? (
-                      <a className="repo-link" href={repo.ci.htmlUrl}>
+                      <a className="repo-link" href={repo.ci.htmlUrl} rel="noreferrer">
                         <span className="badge" data-tone={toneForCi(repo)}>
                           {ciLabel(repo)}
                         </span>

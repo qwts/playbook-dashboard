@@ -39,12 +39,21 @@ export type SecurityCounts = {
   secretScanningOpen: number | null;
 };
 
+/**
+ * A URL the collector verified is `https:` at exactly `https://github.com`.
+ *
+ * The type states the invariant; `sanitizeGithubUrl` in the collector enforces
+ * it. Anything failing that check is published as `null`, so every consumer of
+ * a URL field has to handle the absence and cannot assume a link exists.
+ */
+export type GithubUrl = `https://github.com/${string}`;
+
 export type CiStatus = {
   workflowName: string | null;
   conclusion: string | null;
   status: string | null;
   updatedAt: string | null;
-  htmlUrl: string | null;
+  htmlUrl: GithubUrl | null;
 };
 
 export type RepoSnapshot = {
@@ -60,7 +69,8 @@ export type RepoSnapshot = {
   codexSyncEnabled: boolean | null;
   /** Manifest free text, length-capped and control-character rejected. */
   delta: string;
-  htmlUrl: string;
+  /** `null` when the repo's URL failed origin validation — render unlinked. */
+  htmlUrl: GithubUrl | null;
   securityFloor: SecurityFloor;
   security: SecurityCounts;
   ci: CiStatus;

@@ -2,15 +2,107 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
+  ALLOWED_URL_ORIGIN,
   MAX_DELTA_LENGTH,
   fetchRepoForGate,
   isObservedPublic,
   isPublishable,
   parseCodexSync,
   sanitizeDelta,
+  sanitizeGithubUrl,
 } from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
+
+test('a github https URL is published, in normalized form', () => {
+  assert.equal(
+    sanitizeGithubUrl('https://github.com/qwts/example'),
+    'https://github.com/qwts/example',
+  );
+  assert.equal(sanitizeGithubUrl('https://github.com'), 'https://github.com/');
+  // The default port is the same origin, not a different one.
+  assert.equal(sanitizeGithubUrl('https://github.com:443/qwts/x'), 'https://github.com/qwts/x');
+});
+
+test('a non-https scheme never reaches an href', () => {
+  // React escapes text but does not sanitize href schemes, so `javascript:` in
+  // an href is script execution on click.
+  const schemes = [
+    'javascript:alert(1)',
+    'JavaScript:alert(1)',
+    '  javascript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'vbscript:msgbox(1)',
+    'file:///etc/passwd',
+    'http://github.com/qwts/example',
+    '//github.com/qwts/example',
+  ];
+
+  for (const value of schemes) {
+    assert.equal(sanitizeGithubUrl(value), null, `${JSON.stringify(value)} must not be published`);
+  }
+});
+
+test('a lookalike or unrelated origin is rejected', () => {
+  const origins = [
+    'https://github.com.evil.example/qwts/x',
+    'https://evil.example/github.com/qwts/x',
+    'https://raw.githubusercontent.com/qwts/x',
+    'https://gist.github.com/qwts/x',
+    'https://notgithub.com/qwts/x',
+    'https://github.co/qwts/x',
+    // A path that merely starts with the allowed origin is not that origin.
+    'https://evil.example/?u=https://github.com/qwts/x',
+  ];
+
+  for (const value of origins) {
+    assert.equal(sanitizeGithubUrl(value), null, `${value} must not be published`);
+  }
+});
+
+test('embedded credentials are rejected even though the origin matches', () => {
+  // new URL('https://user:pass@github.com/x').origin === 'https://github.com',
+  // so an origin check alone lets this through while the href still carries the
+  // credentials — a phishing shape rendered by our own page.
+  assert.equal(sanitizeGithubUrl('https://user:pass@github.com/qwts/x'), null);
+  assert.equal(sanitizeGithubUrl('https://user@github.com/qwts/x'), null);
+});
+
+test('a malformed or absent URL becomes null rather than throwing', () => {
+  for (const value of ['', 'not a url', '/qwts/example', undefined, null, 42, {}, [], true]) {
+    assert.equal(sanitizeGithubUrl(value), null, `${JSON.stringify(value)} should be null`);
+  }
+});
+
+test('the allowed origin is exactly one host', () => {
+  assert.equal(ALLOWED_URL_ORIGIN, 'https://github.com');
+});
+
+// A narrow slice of the #9 snapshot-contract check, covering the invariant this
+// change introduces. The committed fixture is the artifact deployed whenever
+// collection fails, so it is published HTML input in its own right and has to
+// satisfy the same rule as a fresh collection. #9 will fold this into the full
+// schema check; `sanitizeGithubUrl` is exported so there is one definition to
+// fold in rather than a second copy of the rule.
+test('every URL in the committed snapshot upholds the origin invariant', () => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('../public/data/snapshot.json', import.meta.url), 'utf8'),
+  );
+
+  for (const repo of snapshot.repos) {
+    for (const [field, value] of [
+      ['htmlUrl', repo.htmlUrl],
+      ['ci.htmlUrl', repo.ci.htmlUrl],
+    ]) {
+      if (value === null) continue;
+      assert.equal(
+        sanitizeGithubUrl(value),
+        value,
+        `${repo.name}.${field} is published as ${JSON.stringify(value)}, which fails origin validation`,
+      );
+    }
+  }
+});
 
 test('codex sync reports what the manifest explicitly states', () => {
   assert.equal(parseCodexSync({ codexSync: { enabled: true } }), true);
