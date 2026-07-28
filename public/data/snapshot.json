@@ -6,6 +6,7 @@
     "manifestRepo": "qwts/playbook-engineering",
     "manifestPath": "governance/repos.json"
   },
+  "withheld": 0,
   "repos": [
     {
       "name": "playbook-engineering",
@@ -14,7 +15,6 @@
       "sharedCi": true,
       "codexSyncEnabled": false,
       "delta": "",
-      "note": "This repository — source of the governance it describes.",
       "htmlUrl": "https://github.com/qwts/playbook-engineering",
       "securityFloor": {
         "secretScanning": true,
@@ -44,7 +44,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "Version-consistency gate in CI.",
-      "note": "Formerly named photos.",
       "htmlUrl": "https://github.com/qwts/overlook",
       "securityFloor": {
         "secretScanning": true,
@@ -74,7 +73,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "Coverage floor 71% lines / 80% branches.",
-      "note": "",
       "htmlUrl": "https://github.com/qwts/image-trail",
       "securityFloor": {
         "secretScanning": true,
@@ -104,7 +102,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "Rust + FE gates; spec/traceability.",
-      "note": "",
       "htmlUrl": "https://github.com/qwts/cartograph",
       "securityFloor": {
         "secretScanning": true,
@@ -134,7 +131,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "",
-      "note": "Pure consumer.",
       "htmlUrl": "https://github.com/qwts/bookmarkit",
       "securityFloor": {
         "secretScanning": true,
@@ -164,7 +160,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "",
-      "note": "Pure consumer.",
       "htmlUrl": "https://github.com/qwts/quorum",
       "securityFloor": {
         "secretScanning": true,
@@ -194,7 +189,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "",
-      "note": "Onboarding.",
       "htmlUrl": "https://github.com/qwts/agent-bot-identity",
       "securityFloor": {
         "secretScanning": true,
@@ -224,7 +218,6 @@
       "sharedCi": false,
       "codexSyncEnabled": true,
       "delta": "",
-      "note": "Onboarding.",
       "htmlUrl": "https://github.com/qwts/codex-rules-editor",
       "securityFloor": {
         "secretScanning": true,

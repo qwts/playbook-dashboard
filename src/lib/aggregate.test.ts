@@ -11,6 +11,7 @@ import {
   isSnapshotStale,
   sumOpenSecurity,
   visibleRepos,
+  withheldCount,
 } from './aggregate.ts';
 
 const NO_CI: CiStatus = {
@@ -29,7 +30,6 @@ function repo(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     sharedCi: false,
     codexSyncEnabled: true,
     delta: '',
-    note: '',
     htmlUrl: 'https://github.com/qwts/example',
     securityFloor: {
       secretScanning: true,
@@ -49,7 +49,7 @@ function counts(overrides: Partial<SecurityCounts> = {}): SecurityCounts {
   return { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0, ...overrides };
 }
 
-function snapshot(repos: RepoSnapshot[]): Snapshot {
+function snapshot(repos: RepoSnapshot[], withheld = 0): Snapshot {
   return {
     schemaVersion: 1,
     generatedAt: '2026-07-26T12:00:00.000Z',
@@ -58,6 +58,7 @@ function snapshot(repos: RepoSnapshot[]): Snapshot {
       manifestRepo: 'qwts/playbook-engineering',
       manifestPath: 'governance/repos.json',
     },
+    withheld,
     repos,
   };
 }
@@ -75,6 +76,40 @@ test('retired repos leave the fleet view but stay in the manifest', () => {
     visible.map((r) => r.name),
     ['active-one', 'onboarding-one'],
   );
+});
+
+test('a non-public repo is never rendered, even if it reaches the snapshot', () => {
+  const repos = [
+    repo({ name: 'public-one' }),
+    repo({ name: 'private-one', visibility: 'private' }),
+    repo({ name: 'internal-one', visibility: 'internal' }),
+  ];
+
+  const visible = visibleRepos(snapshot(repos));
+
+  assert.deepEqual(
+    visible.map((r) => r.name),
+    ['public-one'],
+  );
+});
+
+test('unknown visibility is withheld rather than assumed public', () => {
+  for (const visibility of ['', 'unknown', 'PUBLIC', 'public ', undefined as unknown as string]) {
+    const visible = visibleRepos(snapshot([repo({ name: 'mystery', visibility })]));
+    assert.deepEqual(visible, [], `visibility ${JSON.stringify(visibility)} should not render`);
+  }
+});
+
+test('the withheld count is reported so a partial view is visible', () => {
+  assert.equal(withheldCount(snapshot([repo()], 3)), 3);
+  assert.equal(withheldCount(snapshot([repo()], 0)), 0);
+});
+
+test('an absent or nonsensical withheld count reads as unknown, not zero', () => {
+  for (const value of [undefined, null, -1, 1.5, Number.NaN, '2', {}]) {
+    const bad = { ...snapshot([repo()]), withheld: value as number };
+    assert.equal(withheldCount(bad), null, `withheld ${JSON.stringify(value)} should be unknown`);
+  }
 });
 
 test('status counts separate active from onboarding', () => {

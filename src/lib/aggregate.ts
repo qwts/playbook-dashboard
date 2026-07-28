@@ -2,8 +2,27 @@ import type { RepoSnapshot, Snapshot } from '../types/snapshot';
 
 const STALE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Rows the page is allowed to render.
+ *
+ * The real publication gate lives in the collector — a repo that is not
+ * cleared for publication never reaches `snapshot.json` at all. This is the
+ * backstop for a stale, hand-edited, or otherwise untrusted snapshot: anything
+ * not observed as public at collection time is dropped rather than rendered.
+ * Unknown visibility is not public, so it fails closed too.
+ */
 export function visibleRepos(snapshot: Snapshot): RepoSnapshot[] {
-  return snapshot.repos.filter((repo) => repo.status !== 'retired');
+  return snapshot.repos.filter((repo) => repo.status !== 'retired' && repo.visibility === 'public');
+}
+
+/**
+ * Count of governed repos this snapshot deliberately omitted, or `null` when
+ * the snapshot does not state it. Null renders as unknown, never as zero.
+ */
+export function withheldCount(snapshot: Snapshot): number | null {
+  const value: unknown = snapshot.withheld;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
+  return value;
 }
 
 export function sumOpenSecurity(repos: RepoSnapshot[]): number {
