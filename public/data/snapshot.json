@@ -42,7 +42,7 @@
       "visibility": "public",
       "status": "active",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "Version-consistency gate in CI.",
       "htmlUrl": "https://github.com/qwts/overlook",
       "securityFloor": {
@@ -71,7 +71,7 @@
       "visibility": "public",
       "status": "active",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "Coverage floor 71% lines / 80% branches.",
       "htmlUrl": "https://github.com/qwts/image-trail",
       "securityFloor": {
@@ -100,7 +100,7 @@
       "visibility": "public",
       "status": "active",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "Rust + FE gates; spec/traceability.",
       "htmlUrl": "https://github.com/qwts/cartograph",
       "securityFloor": {
@@ -129,7 +129,7 @@
       "visibility": "public",
       "status": "active",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "",
       "htmlUrl": "https://github.com/qwts/bookmarkit",
       "securityFloor": {
@@ -158,7 +158,7 @@
       "visibility": "public",
       "status": "active",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "",
       "htmlUrl": "https://github.com/qwts/quorum",
       "securityFloor": {
@@ -187,7 +187,7 @@
       "visibility": "public",
       "status": "onboarding",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "",
       "htmlUrl": "https://github.com/qwts/agent-bot-identity",
       "securityFloor": {
@@ -216,7 +216,7 @@
       "visibility": "public",
       "status": "onboarding",
       "sharedCi": false,
-      "codexSyncEnabled": true,
+      "codexSyncEnabled": null,
       "delta": "",
       "htmlUrl": "https://github.com/qwts/codex-rules-editor",
       "securityFloor": {
