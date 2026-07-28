@@ -15,7 +15,7 @@
  * Metadata + Security events / Dependabot alerts / Actions on governed repos).
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -564,13 +564,6 @@ async function main() {
   // Obviously broken beats plausibly wrong on a board whose whole job is posture.
   //
   // The run still fails (see pages.yml) so the blank is noticed, not just served.
-  const h = collectionHealth();
-  if (h.denied || h.rateLimited || h.failed) {
-    warn(
-      `degraded reads: ${h.denied} denied, ${h.rateLimited} rate-limited, ${h.failed} failed ` +
-        '— counts they would have filled are published as unknown, not zero',
-    );
-  }
   if (repos.length === 0) {
     warn(
       `WARNING: no repos passed the publication gates — publishing an empty snapshot. ` +
@@ -595,9 +588,93 @@ async function main() {
     repos,
   };
 
+  const reasons = degradedReasons(snapshot);
+  if (reasons.length > 0) {
+    warn(
+      `degraded: ${reasons.join(', ')} — published as unknown, not zero. ` +
+        'This run is not clean.',
+    );
+  }
   mkdirSync(path.dirname(outPath), { recursive: true });
   writeFileSync(outPath, `${JSON.stringify(snapshot, null, 2)}\n`);
   process.stderr.write(`wrote ${outPath}\n`);
+
+  // After the write, so the verdict only describes a snapshot that shipped. If
+  // the write throws, the step fails, `fresh` is false, and the stale gate — not
+  // this one — is the accurate complaint.
+  reportDegradation(reasons);
+}
+
+/**
+ * Why a snapshot that was written successfully still knows less than it looks
+ * like it knows. Empty means the run read everything it set out to read.
+ *
+ * This is the layer the earlier fixes left open. A denied read became `null`,
+ * #3 stopped `null` becoming a green zero in the UI, and #12's first half
+ * stopped a rate limit killing the run — but the *run* stayed green through
+ * all of it, because `continue-on-error` on the collect step only distinguishes
+ * "collection failed" from "collection succeeded". A collection that succeeded
+ * while unable to read half the fleet is a third state, and it looked like the
+ * good one: green check, published page, question marks nobody was told about.
+ *
+ * Derived from the artifact rather than from the health counters alone, because
+ * the artifact is what gets published. A 404 yields a `null` count without
+ * touching a counter, and a failed gate call increments one for a repo that was
+ * never going to be published. What matters is whether the page will show a
+ * `?`, and that is a property of the snapshot.
+ *
+ * Counts only, never which repo — same contract as everything else that leaves
+ * this file, and the reason string reaches a public Actions log.
+ */
+export function degradedReasons(snapshot) {
+  const reasons = [];
+  const health = snapshot?.collection ?? {};
+  if (health.denied > 0) reasons.push(`${health.denied} denied`);
+  if (health.rateLimited > 0) reasons.push(`${health.rateLimited} rate-limited`);
+  if (health.failed > 0) reasons.push(`${health.failed} failed or timed out`);
+
+  let unknown = 0;
+  for (const repo of snapshot?.repos ?? []) {
+    // `codexSyncEnabled` is deliberately not counted. Its `null` means the
+    // manifest never asserted the fact (#8), not that a read was refused —
+    // most governed repos are silent about it today, and reddening every run
+    // over an absent declaration would make this gate noise within a week. The
+    // gate is for what the collector could not *read*.
+    for (const value of Object.values(repo?.security ?? {})) {
+      if (!Number.isInteger(value) || value < 0) unknown += 1;
+    }
+    for (const value of Object.values(repo?.securityFloor ?? {})) {
+      if (typeof value !== 'boolean') unknown += 1;
+    }
+  }
+  if (unknown > 0) reasons.push(`${unknown} posture fields unreadable`);
+
+  return reasons;
+}
+
+/**
+ * Hand the verdict to the workflow, which is the only place that can act on it.
+ *
+ * A degraded snapshot and a failed collection want opposite handling: the
+ * degraded one is still the freshest truth available and must be published, it
+ * just must not be published quietly. So this cannot ride on the step's exit
+ * code — a non-zero exit makes `fresh` false and swaps in the committed
+ * fixture, throwing away the better artifact to report the smaller problem.
+ *
+ * No-ops outside Actions.
+ *
+ * The key names here are a contract with `pages.yml`, which nothing at runtime
+ * would notice breaking: a renamed key makes the job output empty, the gate's
+ * `if` false, and every degraded run green again — silently, and in the
+ * direction that looks fine. Pinned across both files in workflows.test.mjs.
+ */
+export function reportDegradation(reasons, outputPath = process.env.GITHUB_OUTPUT) {
+  if (!outputPath) return;
+  // Every character here originates in this file's own literals and integers.
+  // Stripped anyway: a newline would let a value forge a second output line,
+  // and this is the one place a collector string crosses into the workflow.
+  const reason = reasons.join(', ').replace(/[^\w ,.:;/()-]/gu, '');
+  appendFileSync(outputPath, `degraded=${reasons.length > 0}\ndegraded_reason=${reason}\n`);
 }
 
 // Only collect when run as a script; importing this module (from tests) must

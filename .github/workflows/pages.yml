@@ -13,6 +13,13 @@ on:
 # token or write to Pages never see the PAT.
 permissions: {}
 
+# Deliberately not cancelling, and this is the considered answer rather than the
+# inherited default. Cancelling would interrupt `deploy-pages` mid-flight, and
+# the queue argument for accepting that risk does not survive the per-job
+# `timeout-minutes` below: Actions holds at most one pending run per group — a
+# newer arrival replaces the pending one rather than stacking behind it — so the
+# ceiling is one running plus one queued, and a run can no longer occupy the
+# group for the default six hours. Bounded runs made this the cheaper option.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -23,6 +30,12 @@ jobs:
   # asserting this repository's identity.
   collect:
     runs-on: ubuntu-latest
+    # ~2 minutes in practice, and every request inside it already carries its own
+    # 10s deadline. This bounds the shapes that deadline cannot: a wedged runner,
+    # a hung npm ci, a step waiting on something that never arrives. The default
+    # is 360 — six hours holding a concurrency group that does not cancel, on an
+    # hourly schedule, while holding the fleet credential.
+    timeout-minutes: 10
     # Declares no `url`, so it reports no site. It does still create a
     # `github-pages` deployment record — GitHub creates one before evaluating
     # the branch policy, then fails it — so `main` sees two records per run
@@ -51,7 +64,20 @@ jobs:
       # A string 'true'/'false' — collection status has to cross the job
       # boundary as data, because the step is allowed to fail without failing
       # the job (see the deploy job's final step).
+      #
+      # `outcome`, not `conclusion`. With `continue-on-error: true` the step's
+      # conclusion is reported as success even when the step failed — that is
+      # what the flag does — so `conclusion` would report every dead credential
+      # and every collection failure as a fresh snapshot, silently reinstating
+      # the exact bug this output exists to prevent. `outcome` is the result
+      # before the flag is applied. Pinned by a test in tools/workflows.test.mjs.
       fresh: ${{ steps.collect.outcome == 'success' }}
+      # Distinct from `fresh`, because "collected nothing" and "collected less
+      # than it should have" want opposite handling: the first publishes the
+      # committed fixture, the second publishes the degraded snapshot and then
+      # says so. Written by the collector, which is the only thing that knows.
+      degraded: ${{ steps.collect.outputs.degraded }}
+      degraded_reason: ${{ steps.collect.outputs.degraded_reason }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
@@ -95,6 +121,7 @@ jobs:
   build:
     needs: collect
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -132,6 +159,7 @@ jobs:
   deploy:
     needs: [collect, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -153,4 +181,27 @@ jobs:
         run: |
           echo "::error::Deployed the committed fixture, not a fresh snapshot. \
           The published dashboard is stale. See the 'Collect redacted snapshot' step."
+          exit 1
+      # The third state. `fresh` only separates "collection failed" from
+      # "collection succeeded", so a run that collected successfully while
+      # unable to read half the fleet was indistinguishable from a clean one:
+      # green check, published page, question marks nobody was told about. That
+      # is the same defect as a null count rendering green, one layer up — the
+      # UI stopped lying about it in #3, and this stops CI lying about it.
+      #
+      # Deployed first, like the step above and for the same reason: a snapshot
+      # honest about its gaps is still the freshest truth available, and burying
+      # it would trade a legible problem for a stale one.
+      - name: Fail the run when the collection knew less than it should have
+        if: needs.collect.outputs.fresh == 'true' && needs.collect.outputs.degraded == 'true'
+        env:
+          # Bound, never interpolated into the script body. Counts only, built
+          # from the collector's own integers — but a job output is data
+          # crossing a boundary, and data crossing a boundary does not get to
+          # choose where it lands.
+          REASON: ${{ needs.collect.outputs.degraded_reason }}
+        run: |
+          echo "::error::Published a snapshot the collector could not fully read: ${REASON}. \
+          The dashboard is current but incomplete; affected fields show '?' rather than a \
+          reassuring zero. Check the fleet token's permissions and the rate-limit budget."
           exit 1

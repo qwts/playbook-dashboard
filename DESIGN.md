@@ -135,6 +135,60 @@ The failure this prevents is specific: a dashboard that looks most reassuring
 exactly where it knows least. For a tool whose entire job is reporting posture,
 that is the one error nobody ever investigates.
 
+## Decision: a run that succeeded is not a run that was complete
+
+The rule above governs the page. This one governs the run that builds it, and it
+is the same rule one layer out: a green check must not be the most reassuring
+thing about a collection that could not read the fleet.
+
+`continue-on-error` on the collect step distinguishes exactly two states —
+collection failed, collection succeeded. A collection that succeeded while
+denied half its reads is a third, and it wore the first one's colours: green
+check, published page, question marks nobody was told about. The UI stopped
+lying about it in #3; CI kept lying about it until #12.
+
+So the workflow carries two independent signals out of the collect job, because
+they want opposite handling:
+
+| | `fresh` | `degraded` | outcome |
+|---|---|---|---|
+| clean run | `true` | `false` | publish, green |
+| partial reads | `true` | `true` | **publish**, then fail |
+| collection failed | `false` | — | publish the committed fixture, then fail |
+
+The middle row is the decision. A degraded snapshot is still the freshest truth
+available, so it ships — degradation must not ride on the step's exit code,
+because a non-zero exit makes `fresh` false and swaps in the committed fixture,
+discarding the better artifact to report the smaller problem. Both gates run
+*after* `deploy-pages` for the same reason #20 established: a legible degraded
+dashboard beats an outage.
+
+**Degradation is read from the artifact, not the counters.** A 404 yields a
+`null` count without touching a health counter, and a failed gate call
+increments one for a repo that was never going to be published. The question the
+gate asks is whether the page will show a `?`, and that is a property of the
+snapshot. A fact the manifest never asserted (`codexSyncEnabled`) is not a read
+that failed and does not count — a gate that is always red is a gate nobody
+reads.
+
+**Bounding the run.** Every request has a deadline, but a deadline cannot bound
+a wedged runner or a hung install, so every job declares `timeout-minutes`. The
+default is 360: six hours holding a concurrency group that does not cancel, on
+an hourly schedule, while holding the fleet credential.
+
+`cancel-in-progress` stays `false`, and that is now a decision rather than an
+inherited default. Cancelling would interrupt `deploy-pages` mid-flight; the
+queue argument for accepting that risk does not survive bounded jobs, since
+Actions holds at most one pending run per group and a newer arrival replaces the
+pending one rather than stacking behind it.
+
+**`pages.yml` is never executed by a pull request.** It has no `pull_request`
+trigger, so a change that breaks it merges clean and is discovered by the hourly
+schedule, in production, with the credential in hand. `tools/workflows.test.mjs`
+asserts against the workflow source instead — including the contract between the
+collector's output keys and the gate that reads them, which spans two files and
+which neither file's own tests can see.
+
 ## Local development
 
 - Browse URL: `https://local.dev.zts1.com:8443/`

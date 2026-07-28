@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ALLOWED_URL_ORIGIN,
@@ -14,6 +16,8 @@ import {
   isRateLimited,
   retryDelayMs,
   countOpenAlerts,
+  degradedReasons,
+  reportDegradation,
   collectionHealth,
   resetCollectionHealth,
   resetRateLimitWindow,
@@ -562,4 +566,172 @@ test('a wait longer than the run will sit out closes the window, whatever its sh
       assert.equal(rateLimitWindowIsOpen(), false, 'fifteen minutes outlasts the run');
     },
   );
+});
+
+// --- a successful collection that knew less than it should have -----------
+//
+// The layer the earlier fixes left open. #3 stopped a null count rendering as a
+// green zero, and #12's collector half stopped a rate limit killing the run —
+// but the run itself stayed green through both, because `continue-on-error`
+// only separates "collection failed" from "collection succeeded". A collection
+// that succeeded while unable to read half the fleet is a third state, and it
+// wore the good one's colours.
+
+function snap(overrides = {}) {
+  return {
+    collection: { denied: 0, rateLimited: 0, failed: 0 },
+    repos: [],
+    ...overrides,
+  };
+}
+
+function healthyRepo(overrides = {}) {
+  return {
+    name: 'example',
+    codexSyncEnabled: null,
+    security: { dependabotOpen: 0, codeScanningOpen: 1, secretScanningOpen: 0 },
+    securityFloor: {
+      secretScanning: true,
+      pushProtection: true,
+      dependabotAlerts: true,
+      privateVulnerabilityReporting: true,
+      codeqlConfigured: false,
+      defaultBranchRuleset: true,
+    },
+    ...overrides,
+  };
+}
+
+test('a collection that read everything it set out to read is not degraded', () => {
+  assert.deepEqual(degradedReasons(snap({ repos: [healthyRepo(), healthyRepo()] })), []);
+  assert.deepEqual(degradedReasons(snap()), [], 'an empty fleet is empty, not degraded');
+});
+
+test('each way a read can go missing is named separately', () => {
+  assert.deepEqual(degradedReasons(snap({ collection: { denied: 2, rateLimited: 0, failed: 0 } })), [
+    '2 denied',
+  ]);
+  assert.deepEqual(degradedReasons(snap({ collection: { denied: 0, rateLimited: 3, failed: 0 } })), [
+    '3 rate-limited',
+  ]);
+  assert.deepEqual(degradedReasons(snap({ collection: { denied: 0, rateLimited: 0, failed: 1 } })), [
+    '1 failed or timed out',
+  ]);
+  // Collapsed, they would say only "something went wrong" — which is the
+  // difference between "fix the token" and "wait".
+  assert.deepEqual(degradedReasons(snap({ collection: { denied: 1, rateLimited: 1, failed: 1 } })), [
+    '1 denied',
+    '1 rate-limited',
+    '1 failed or timed out',
+  ]);
+});
+
+// Derived from the artifact, not the counters. A 404 yields a null count
+// without touching a counter, and a failed gate call increments one for a repo
+// that was never going to be published. What matters is whether the page shows
+// a `?`, and that is a property of the snapshot.
+test('an unreadable posture field is degradation even when no counter moved', () => {
+  const reasons = degradedReasons(
+    snap({ repos: [healthyRepo({ security: { dependabotOpen: null, codeScanningOpen: 0, secretScanningOpen: 0 } })] }),
+  );
+  assert.deepEqual(reasons, ['1 posture fields unreadable']);
+});
+
+test('an unreadable floor boolean counts the same as an unreadable count', () => {
+  const reasons = degradedReasons(
+    snap({ repos: [healthyRepo({ securityFloor: { ...healthyRepo().securityFloor, codeqlConfigured: null } })] }),
+  );
+  assert.deepEqual(reasons, ['1 posture fields unreadable']);
+});
+
+// The distinction the gate lives or dies by. `codexSyncEnabled` is null on
+// seven of the eight repos published today, because the manifest never asserts
+// it (#8) — not because a read was refused. Counting it would redden every run
+// from the first, and a gate that is always red is a gate nobody reads.
+test('a fact the manifest never asserted is not a read that failed', () => {
+  assert.deepEqual(degradedReasons(snap({ repos: [healthyRepo({ codexSyncEnabled: null })] })), []);
+  assert.deepEqual(degradedReasons(snap({ repos: [healthyRepo({ codexSyncEnabled: true })] })), []);
+});
+
+test('a malformed count from an untrusted snapshot is unreadable, not zero', () => {
+  for (const bad of [undefined, 'three', Number.NaN, -1, 1.5, {}, [], true, Infinity]) {
+    const reasons = degradedReasons(
+      snap({ repos: [healthyRepo({ security: { dependabotOpen: bad, codeScanningOpen: 0, secretScanningOpen: 0 } })] }),
+    );
+    assert.deepEqual(reasons, ['1 posture fields unreadable'], `${JSON.stringify(bad)} is unknown`);
+  }
+});
+
+test('nothing hostile in a snapshot reaches the reason string', () => {
+  // The reason is echoed into a public Actions log and crosses a job boundary.
+  const reasons = degradedReasons(
+    snap({
+      collection: { denied: 1, rateLimited: 0, failed: 0 },
+      repos: [healthyRepo({ name: 'secret-internal-repo', security: { dependabotOpen: null, codeScanningOpen: 0, secretScanningOpen: 0 } })],
+    }),
+  );
+  const joined = reasons.join(', ');
+  assert.doesNotMatch(joined, /secret-internal-repo/u, 'counts only — never which repo');
+  assert.match(joined, /^[\w ,.:;/()-]+$/u, 'no character that could forge a log command');
+});
+
+test('a degraded snapshot never silently keeps its shape', () => {
+  assert.deepEqual(degradedReasons(undefined), [], 'no snapshot is not a claim about one');
+  assert.deepEqual(degradedReasons({}), []);
+});
+
+test('the committed fallback fixture is not itself degraded', () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL('../public/data/snapshot.json', import.meta.url), 'utf8'),
+  );
+  // The gate is guarded by `fresh == 'true'` so it never evaluates the fixture,
+  // but a fixture that reads as degraded would mean the shipped fallback is
+  // quietly publishing unknowns as posture.
+  assert.deepEqual(degradedReasons(fixture), []);
+});
+
+test('the verdict is handed to the workflow in the format it reads', () => {
+  const out = join(tmpdir(), `gh-output-${process.pid}.txt`);
+  try {
+    reportDegradation(['2 denied', '1 posture fields unreadable'], out);
+    assert.equal(
+      readFileSync(out, 'utf8'),
+      'degraded=true\ndegraded_reason=2 denied, 1 posture fields unreadable\n',
+    );
+  } finally {
+    rmSync(out, { force: true });
+  }
+});
+
+test('a clean run says so explicitly rather than saying nothing', () => {
+  const out = join(tmpdir(), `gh-output-clean-${process.pid}.txt`);
+  try {
+    reportDegradation([], out);
+    // An absent output and a false one are the same to the gate's `if`, but not
+    // to a reader of the log deciding whether the check ran at all.
+    assert.equal(readFileSync(out, 'utf8'), 'degraded=false\ndegraded_reason=\n');
+  } finally {
+    rmSync(out, { force: true });
+  }
+});
+
+test('a reason cannot forge a second output line', () => {
+  const out = join(tmpdir(), `gh-output-forge-${process.pid}.txt`);
+  try {
+    // Not reachable from the current reasons, which are built from integers.
+    // Asserted anyway: this is the one place a collector string crosses into
+    // the workflow, and a forged `degraded=false` would switch the gate off.
+    reportDegradation(['1 denied\ndegraded=false', '<img src=x>'], out);
+    const written = readFileSync(out, 'utf8');
+    assert.equal(written.split('\n').filter(Boolean).length, 2, 'exactly two output lines');
+    assert.doesNotMatch(written, /degraded=false/u);
+    assert.equal(written.split('\n')[0], 'degraded=true');
+  } finally {
+    rmSync(out, { force: true });
+  }
+});
+
+test('outside Actions it writes nothing at all', () => {
+  assert.doesNotThrow(() => reportDegradation(['1 denied'], undefined));
+  assert.doesNotThrow(() => reportDegradation(['1 denied'], ''));
 });
