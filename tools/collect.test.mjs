@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   ALLOWED_URL_ORIGIN,
+  MAX_BACKOFF_MS,
   MAX_DELTA_LENGTH,
   fetchRepoForGate,
   isObservedPublic,
@@ -10,6 +11,8 @@ import {
   parseCodexSync,
   sanitizeDelta,
   sanitizeGithubUrl,
+  isRateLimited,
+  retryDelayMs,
 } from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
@@ -304,7 +307,10 @@ test('pre-gate failures are recorded as bare statuses, never as identities', asy
     () => fetchRepoForGate('another-secret', failures),
   );
 
-  assert.deepEqual(failures, ['403', 'network']);
+  // A transport failure surfaces as a synthetic 503 rather than a throw, so no
+  // call site has to catch to avoid aborting the run. Either way it is a bare
+  // status: no repo name, no path.
+  assert.deepEqual(failures, ['403', '503']);
 });
 
 test('no log line interpolates a manifest entry name', () => {
@@ -315,4 +321,70 @@ test('no log line interpolates a manifest entry name', () => {
     [],
     'a withheld repo must never be named in an Actions log — log position, not identity',
   );
+});
+
+
+// --- request deadlines and rate limits (#12) -----------------------------
+
+function res(status, headers = {}) {
+  return { status, headers: { get: (k) => headers[k.toLowerCase()] ?? null } };
+}
+
+test('a rate limit is distinguished from a plain refusal', () => {
+  // Both arrive as 403 and used to collapse into the same null.
+  assert.equal(isRateLimited(res(429)), true, '429 is always a limit');
+  assert.equal(isRateLimited(res(403, { 'x-ratelimit-remaining': '0' })), true, 'primary limit');
+  assert.equal(isRateLimited(res(403, { 'retry-after': '30' })), true, 'secondary limit');
+
+  // A permission the token does not have: no limit headers.
+  assert.equal(isRateLimited(res(403)), false, 'forbidden is not rate limited');
+  assert.equal(isRateLimited(res(403, { 'x-ratelimit-remaining': '4821' })), false);
+  assert.equal(isRateLimited(res(404)), false);
+  assert.equal(isRateLimited(res(200)), false);
+  assert.equal(isRateLimited(null), false);
+});
+
+test('retry delay honours the server before falling back to backoff', () => {
+  const now = 1_000_000;
+  assert.equal(retryDelayMs(res(403, { 'retry-after': '5' }), 0, now), 5000);
+  // x-ratelimit-reset is epoch seconds.
+  assert.equal(retryDelayMs(res(403, { 'x-ratelimit-reset': String(now / 1000 + 7) }), 0, now), 7000);
+  // Neither header: exponential.
+  assert.equal(retryDelayMs(res(429), 0, now), 1000);
+  assert.equal(retryDelayMs(res(429), 2, now), 4000);
+});
+
+test('a hostile or absurd delay is capped, so a run cannot be parked forever', () => {
+  const now = 1_000_000;
+  assert.equal(retryDelayMs(res(403, { 'retry-after': '86400' }), 0, now), MAX_BACKOFF_MS);
+  assert.equal(
+    retryDelayMs(res(403, { 'x-ratelimit-reset': String(now / 1000 + 99999) }), 0, now),
+    MAX_BACKOFF_MS,
+  );
+  assert.equal(retryDelayMs(res(429), 20, now), MAX_BACKOFF_MS);
+});
+
+test('a past reset or malformed header does not produce a negative wait', () => {
+  const now = 1_000_000;
+  for (const h of [{ 'x-ratelimit-reset': String(now / 1000 - 60) }, { 'retry-after': 'soon' }, {}]) {
+    const delay = retryDelayMs(res(429, h), 0, now);
+    assert.ok(delay > 0 && delay <= MAX_BACKOFF_MS, `${JSON.stringify(h)} -> ${delay}`);
+  }
+});
+
+test('every request carries a deadline', () => {
+  assert.match(SOURCE, /AbortSignal\.timeout\(REQUEST_TIMEOUT_MS\)/u,
+    'gh() must pass an abort signal — an unbounded fetch holds the job and queues every run behind it');
+});
+
+test('CI status degrades on a denied read rather than aborting', () => {
+  const ci = SOURCE.slice(SOURCE.indexOf('async function fetchCi'), SOURCE.indexOf('export function parseCodexSync'));
+  assert.doesNotMatch(ci, /ghJson\(/u, 'actions/runs must not read through ghJson — it throws on 403');
+  assert.match(ci, /response\.ok/u);
+});
+
+test('the repo detail is fetched once, not once per consumer', () => {
+  const floor = SOURCE.slice(SOURCE.indexOf('async function fetchSecurityFloor'), SOURCE.indexOf('async function fetchCi'));
+  assert.doesNotMatch(floor, /await ghJson\(`\/repos\/\$\{ACCOUNT\}\/\$\{repo\}`\)/u,
+    'the gate already holds this response; refetching is pressure against the rate limit');
 });
