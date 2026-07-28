@@ -6,10 +6,43 @@ import {
   fetchRepoForGate,
   isObservedPublic,
   isPublishable,
+  parseCodexSync,
   sanitizeDelta,
 } from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
+
+test('codex sync reports what the manifest explicitly states', () => {
+  assert.equal(parseCodexSync({ codexSync: { enabled: true } }), true);
+  assert.equal(parseCodexSync({ codexSync: { enabled: false } }), false);
+});
+
+test('a silent manifest publishes unknown, not managed', () => {
+  // The reassuring default is the bug: a repo nobody configured and a repo
+  // deliberately enabled must not look identical on a public posture page.
+  for (const entry of [{}, { codexSync: undefined }, undefined, null]) {
+    assert.equal(parseCodexSync(entry), null, `${JSON.stringify(entry)} should be unknown`);
+  }
+});
+
+test('a malformed codexSync is unknown rather than assumed managed', () => {
+  const malformed = [
+    { codexSync: null },
+    { codexSync: 'enabled' },
+    { codexSync: true },
+    { codexSync: 42 },
+    { codexSync: [] },
+    { codexSync: [{ enabled: true }] },
+    { codexSync: {} },
+    { codexSync: { enabled: 'true' } },
+    { codexSync: { enabled: 1 } },
+    { codexSync: { enabled: null } },
+  ];
+
+  for (const entry of malformed) {
+    assert.equal(parseCodexSync(entry), null, `${JSON.stringify(entry)} should be unknown`);
+  }
+});
 
 test('publication requires the manifest to opt a repo in explicitly', () => {
   assert.equal(isPublishable({ name: 'yes', publish: true }), true);
