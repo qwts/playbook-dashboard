@@ -95,6 +95,35 @@ export function resetCollectionHealth() {
   health.failed = 0;
 }
 
+/**
+ * When a primary limit will not reopen inside this run's patience.
+ *
+ * A primary rate limit is account-wide, not per-endpoint: once it fires, every
+ * remaining request is limited too, and each would independently spend its own
+ * retry budget. Nine repos at eight requests each turns a bounded per-request
+ * wait into tens of minutes — on an hourly schedule, in a concurrency group
+ * that queues rather than supersedes.
+ *
+ * If the window will not reopen in time, retrying is not resilience; it is
+ * spending the run. Stop retrying and let the counts be honestly unknown.
+ */
+let rateLimitedUntilMs = null;
+
+export function resetRateLimitWindow() {
+  rateLimitedUntilMs = null;
+}
+
+function noteRateLimitWindow(response, now = Date.now()) {
+  const reset = Number(response?.headers?.get('x-ratelimit-reset'));
+  if (!Number.isFinite(reset) || reset <= 0) return;
+  const resetMs = reset * 1000;
+  if (resetMs - now > MAX_BACKOFF_MS) rateLimitedUntilMs = resetMs;
+}
+
+export function rateLimitWindowIsOpen(now = Date.now()) {
+  return rateLimitedUntilMs === null || now >= rateLimitedUntilMs;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function gh(pathname, { token: auth, accept } = {}) {
@@ -130,11 +159,13 @@ async function gh(pathname, { token: auth, accept } = {}) {
       return new Response(null, { status: 503, statusText: 'request failed or timed out' });
     }
 
-    if (isRateLimited(response) && attempt < MAX_ATTEMPTS - 1) {
-      await sleep(retryDelayMs(response, attempt));
-      continue;
-    }
     if (isRateLimited(response)) {
+      noteRateLimitWindow(response);
+      // Retry only while the window might still reopen within this run.
+      if (attempt < MAX_ATTEMPTS - 1 && rateLimitWindowIsOpen()) {
+        await sleep(retryDelayMs(response, attempt));
+        continue;
+      }
       health.rateLimited += 1;
       return response;
     }
@@ -143,8 +174,9 @@ async function gh(pathname, { token: auth, accept } = {}) {
     return response;
   }
 
-  health.failed += 1;
-  throw lastError ?? new Error('request failed');
+  // Unreachable: every branch on the final attempt returns. Kept as an
+  // explicit assertion rather than a silent fall-through to undefined.
+  throw lastError ?? new Error(`exhausted ${MAX_ATTEMPTS} attempts without returning`);
 }
 
 async function ghJson(pathname, options) {
@@ -158,7 +190,7 @@ async function ghJson(pathname, options) {
   return response.json();
 }
 
-async function countOpenAlerts(repo, kind) {
+export async function countOpenAlerts(repo, kind) {
   const paths = {
     dependabot: `/repos/${ACCOUNT}/${repo}/dependabot/alerts?state=open&per_page=1`,
     codeScanning: `/repos/${ACCOUNT}/${repo}/code-scanning/alerts?state=open&per_page=1`,
@@ -171,11 +203,17 @@ async function countOpenAlerts(repo, kind) {
   };
 
   const response = await gh(paths[kind], { accept: accepts[kind] });
-  if (response.status === 403 || response.status === 404) return null;
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`${paths[kind]} → ${response.status}: ${body.slice(0, 200)}`);
-  }
+  // Any unsuccessful read is an unknown count, not a fatal error. This used to
+  // map 403/404 to null and throw on everything else — which included the 429
+  // that `gh` returns once its retries are exhausted, i.e. exactly the case the
+  // rate-limit handling exists for. The run died before writeFileSync, so
+  // `collection.rateLimited` was incremented and then discarded.
+  //
+  // `collectionHealth()` carries the reason now, and #3 made a null count
+  // render `?` rather than a green zero, so there is nothing left for the
+  // throw to protect. Dropping it also stops 200 bytes of GitHub's response
+  // body reaching a public Actions log (#23).
+  if (!response.ok) return null;
 
   const link = response.headers.get('link') || '';
   const last = [...link.matchAll(/[?&]page=(\d+)>;\s*rel="last"/g)].pop();

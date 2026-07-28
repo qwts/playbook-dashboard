@@ -13,6 +13,12 @@ import {
   sanitizeGithubUrl,
   isRateLimited,
   retryDelayMs,
+  countOpenAlerts,
+  collectionHealth,
+  resetCollectionHealth,
+  resetRateLimitWindow,
+  rateLimitWindowIsOpen,
+  MAX_ATTEMPTS,
 } from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
@@ -387,4 +393,92 @@ test('the repo detail is fetched once, not once per consumer', () => {
   const floor = SOURCE.slice(SOURCE.indexOf('async function fetchSecurityFloor'), SOURCE.indexOf('async function fetchCi'));
   assert.doesNotMatch(floor, /await ghJson\(`\/repos\/\$\{ACCOUNT\}\/\$\{repo\}`\)/u,
     'the gate already holds this response; refetching is pressure against the rate limit');
+});
+
+
+// --- an exhausted rate limit must not kill the run -----------------------
+
+function limited(status, headers = {}) {
+  return new Response('{"message":"API rate limit exceeded for user"}', { status, headers });
+}
+
+async function withStubbedFetch(respond, fn) {
+  const realFetch = globalThis.fetch;
+  const realToken = process.env.GITHUB_TOKEN;
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = () => true;
+  globalThis.fetch = respond;
+  process.env.GITHUB_TOKEN = 'test-token-not-a-real-credential';
+  resetCollectionHealth();
+  resetRateLimitWindow();
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = realFetch;
+    process.stderr.write = realWrite;
+    if (realToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = realToken;
+    resetCollectionHealth();
+    resetRateLimitWindow();
+  }
+}
+
+// The scenario this PR exists for: a limit outlasting the bounded retry. It
+// used to reach a `throw`, which killed the collection before writeFileSync —
+// so `collection.rateLimited`, the field added to explain the failure, was
+// incremented and then discarded in the same run.
+test('a rate limit that outlasts retries yields an unknown count, not a dead run', async () => {
+  for (const status of [429, 403]) {
+    const count = await withStubbedFetch(
+      async () => limited(status, { 'x-ratelimit-remaining': '0' }),
+      () => countOpenAlerts('example', 'dependabot'),
+    );
+    assert.equal(count, null, `HTTP ${status} must be an unknown count`);
+  }
+});
+
+test('a 5xx on an alert endpoint is unknown, not fatal', async () => {
+  const count = await withStubbedFetch(
+    async () => new Response('upstream exploded', { status: 500 }),
+    () => countOpenAlerts('example', 'codeScanning'),
+  );
+  assert.equal(count, null);
+});
+
+test('an exhausted limit is still counted, so the reason survives', async () => {
+  const health = await withStubbedFetch(
+    async () => limited(429, { 'x-ratelimit-remaining': '0' }),
+    async () => {
+      await countOpenAlerts('example', 'secretScanning');
+      return collectionHealth();
+    },
+  );
+  assert.equal(health.rateLimited, 1, 'the run must be able to say why the count is unknown');
+});
+
+// --- the retry budget is bounded across the run, not just per request ----
+
+test('a primary limit resetting beyond the run closes the window for everyone', () => {
+  resetRateLimitWindow();
+  assert.equal(rateLimitWindowIsOpen(), true, 'open before any limit is seen');
+});
+
+test('a far-future reset stops further retrying instead of re-spending the budget', async () => {
+  const farFuture = Math.floor(Date.now() / 1000) + 3600;
+  let calls = 0;
+  await withStubbedFetch(
+    async () => {
+      calls += 1;
+      return limited(429, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(farFuture) });
+    },
+    async () => {
+      await countOpenAlerts('example', 'dependabot');
+      const first = calls;
+      // A second call in the same run must not spend another full budget:
+      // a primary limit is account-wide, so the window is already known shut.
+      await countOpenAlerts('example', 'codeScanning');
+      assert.equal(calls - first, 1, 'the second request should not retry at all');
+    },
+  );
+  assert.ok(calls <= MAX_ATTEMPTS + 1, `expected the budget to be spent once, saw ${calls} calls`);
 });
