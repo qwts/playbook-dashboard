@@ -74,6 +74,32 @@ test('a malformed or absent URL becomes null rather than throwing', () => {
   }
 });
 
+// Dropping Administration: Read makes /rulesets return 403. Routed through
+// `ghJson` that threw, aborting the whole collection over one boolean — a
+// permission reduction should cost the field it reads, not the run.
+test('an Administration-gated posture field degrades rather than aborting', () => {
+  const floor = SOURCE.slice(
+    SOURCE.indexOf('async function fetchSecurityFloor'),
+    SOURCE.indexOf('async function fetchCi'),
+  );
+
+  assert.doesNotMatch(
+    floor,
+    /ghJson\(`\/repos\/\$\{ACCOUNT\}\/\$\{repo\}\/rulesets`\)/u,
+    'rulesets must not read through ghJson — it throws on 403 and kills the run',
+  );
+
+  for (const call of ['private-vulnerability-reporting', 'default-setup', 'rulesets']) {
+    const idx = floor.indexOf(call);
+    assert.ok(idx !== -1, `${call} should still be collected`);
+    assert.match(
+      floor.slice(idx, idx + 260),
+      /\.ok\b/u,
+      `${call} must branch on response.ok so a denied read is unknown, not fatal`,
+    );
+  }
+});
+
 test('the allowed origin is exactly one host', () => {
   assert.equal(ALLOWED_URL_ORIGIN, 'https://github.com');
 });
