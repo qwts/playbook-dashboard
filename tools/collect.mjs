@@ -337,20 +337,18 @@ async function main() {
       .join(', ');
     warn(`repo lookups that failed before the visibility gate: ${tally}`);
   }
-  // Refuse to write an empty snapshot. Zero published repos is indistinguishable
-  // from a fleet that does not exist, and writing it would overwrite the committed
-  // fixture — replacing stale-but-real data with a confident nothing. Failing here
-  // leaves the fixture in place for the build to deploy, and turns the run red.
+  // An empty snapshot is published, not suppressed. Zero repos renders as
+  // "published 0 of N governed · N withheld" — visibly, unmistakably nothing.
+  // Falling back to the committed fixture instead would serve yesterday's posture
+  // numbers as though they were current, and nobody reads a plausible page twice.
+  // Obviously broken beats plausibly wrong on a board whose whole job is posture.
   //
-  // This is reachable by ordinary misconfiguration, not just breakage: gate 1 is
-  // opt-in, and the manifest lives in another repository, so the gate can ship
-  // before its enabling data does.
+  // The run still fails (see pages.yml) so the blank is noticed, not just served.
   if (repos.length === 0) {
-    throw new Error(
-      `No repos passed the publication gates — refusing to write an empty snapshot. ` +
+    warn(
+      `WARNING: no repos passed the publication gates — publishing an empty snapshot. ` +
         `${governed.length} governed, ${notOptedIn} without publish: true, ` +
-        `${notObservedPublic} not observed public. If this is intended, the dashboard ` +
-        `has nothing to publish and the workflow should be disabled rather than deploying blank.`,
+        `${notObservedPublic} not observed public.`,
     );
   }
 
