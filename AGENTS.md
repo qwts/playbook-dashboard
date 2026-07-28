@@ -37,3 +37,9 @@ into that env var when unset. Bind `127.0.0.1`, browse
 **Redaction contract.** Collector and UI share the `Snapshot` schema in
 `src/types/snapshot.ts`. Prefer failing closed (null counts) over leaking
 detail when an API denies access.
+
+**Publication is opt-in.** A repo reaches the snapshot only if its manifest
+entry sets `publish: true` *and* GitHub reports it public at collection time.
+Withheld repos contribute a count and nothing else. Never widen these gates to
+make a repo appear — fix the manifest instead. See DESIGN.md for the decision
+and its rationale.

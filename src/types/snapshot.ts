@@ -7,6 +7,17 @@ export type Snapshot = {
     manifestRepo: string;
     manifestPath: string;
   };
+  /**
+   * Governed repos the collector deliberately did not publish — a count only,
+   * never which ones. Present so the page can say it is showing a subset
+   * instead of silently implying the fleet is smaller than it is.
+   *
+   * `null` when the snapshot cannot state it. The committed fixture is exactly
+   * that case: it is the fallback deployed when collection fails, and it has no
+   * knowledge of the fleet it would be describing. A snapshot may state what it
+   * *is*; it may not assert what the fleet *is*.
+   */
+  withheld: number | null;
   repos: RepoSnapshot[];
 };
 
@@ -38,12 +49,17 @@ export type CiStatus = {
 
 export type RepoSnapshot = {
   name: string;
+  /**
+   * Visibility as *observed* on GitHub at collection time, not as claimed by
+   * the manifest. Only `public` is ever published; the field is retained so a
+   * stale or hand-edited snapshot can still be filtered at render time.
+   */
   visibility: 'public' | 'private' | 'internal' | string;
   status: RepoStatus;
   sharedCi: boolean;
   codexSyncEnabled: boolean | null;
+  /** Manifest free text, length-capped and control-character rejected. */
   delta: string;
-  note: string;
   htmlUrl: string;
   securityFloor: SecurityFloor;
   security: SecurityCounts;

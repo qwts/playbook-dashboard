@@ -9,6 +9,7 @@ import {
   isSnapshotStale,
   sumOpenSecurity,
   visibleRepos,
+  withheldCount,
 } from './lib/aggregate';
 import type { RepoSnapshot, Snapshot } from './types/snapshot';
 
@@ -110,6 +111,8 @@ export function App() {
   const openSecurity = sumOpenSecurity(repos);
   const failing = countCiFailing(repos);
   const missingCi = countMissingCi(repos);
+  const withheld = withheldCount(state.snapshot);
+  const governed = withheld === null ? null : repos.length + withheld;
 
   return (
     <div className="app">
@@ -119,12 +122,22 @@ export function App() {
         <p>
           Public, redacted view of security counts, repository properties, and CI status across
           the qwts playbook-engineering manifest. Alert bodies, paths, and secret material are never
-          published here.
+          published here. Repositories appear only where the manifest opts them in and GitHub
+          reports them public, so this is a deliberate subset of the governed fleet.
         </p>
         <div className="meta-row">
           <span className="pill" data-tone={stale ? 'warn' : 'ok'}>
             snapshot {formatRelative(state.snapshot.generatedAt)}
             {stale ? ' · stale' : ''}
+          </span>
+          <span
+            className="pill"
+            data-tone={governed === null || withheld ? 'warn' : 'ok'}
+            title="Governed repos are those the manifest lists as not retired. Withheld repos publish no name, counts, or posture."
+          >
+            published {repos.length} of {governed ?? '?'} governed
+            {withheld ? ` · ${withheld} withheld` : ''}
+            {governed === null ? ' · count unknown' : ''}
           </span>
           <span className="pill">
             source {state.snapshot.source.manifestRepo}/{state.snapshot.source.manifestPath}

@@ -13,7 +13,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "node scripts/dev.mjs preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
-    "test": "node --test \"src/**/*.test.ts\"",
+    "test": "node --test \"src/**/*.test.ts\" \"tools/**/*.test.mjs\"",
     "collect": "node tools/collect.mjs",
     "ci": "npm run typecheck && npm test && npm run build"
   },
