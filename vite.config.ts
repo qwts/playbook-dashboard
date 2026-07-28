@@ -48,7 +48,7 @@ export default defineConfig(({ command }) => {
   const localTls = command === 'serve';
 
   return {
-    base: process.env.VITE_BASE || '/playbook-dashboard/',
+    base: process.env.VITE_BASE || '/',
     plugins: [react()],
     server: listenOptions(localTls),
     preview: listenOptions(localTls),
