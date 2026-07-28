@@ -23,6 +23,22 @@ jobs:
   # asserting this repository's identity.
   collect:
     runs-on: ubuntu-latest
+    # Not a deployment — this job declares no `url` and reports none. The
+    # environment is here for its branch policy, which is main-only, and which
+    # was doing unadvertised security work before this workflow was split: it
+    # sat on the single collect-and-deploy job, so a run from any other ref was
+    # refused before its first step and the PAT never reached a runner.
+    #
+    # Splitting the jobs moved that gate onto `deploy` alone and left the
+    # credential reachable from any branch via workflow_dispatch — write access
+    # would have implied running modified collector code against the fleet
+    # credential, which ruleset-protected `main` otherwise prevents.
+    #
+    # The cost is real: the collect job can no longer be smoke-tested from a
+    # branch. That is the correct trade. Verifying a workflow is worth less than
+    # not being able to run the fleet credential off main.
+    environment:
+      name: github-pages
     permissions:
       contents: read
     outputs:
