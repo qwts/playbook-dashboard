@@ -7,28 +7,45 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+# No ambient grants. Every job below states exactly what its own work needs, so
+# no step can reach a permission it has no use for. In particular, the job that
+# holds the fleet PAT holds nothing else, and the jobs that can mint an OIDC
+# token or write to Pages never see the PAT.
+permissions: {}
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  collect-and-deploy:
+  # Holds FLEET_DASHBOARD_TOKEN. `contents: read` and nothing more: no
+  # pages:write to deploy with, and no id-token:write to mint an OIDC token
+  # asserting this repository's identity.
+  collect:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+    outputs:
+      # A string 'true'/'false' — collection status has to cross the job
+      # boundary as data, because the step is allowed to fail without failing
+      # the job (see the deploy job's final step).
+      fresh: ${{ steps.collect.outcome == 'success' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # Nothing here uses the git credential after checkout, and persisting
+          # it writes GITHUB_TOKEN into .git/config where every later step —
+          # and anything they invoke — can read it.
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      # Install lifecycle scripts are arbitrary code from the dependency tree,
+      # and this is the one job holding the PAT. Verified the build is
+      # unaffected: esbuild resolves its binary through optional platform
+      # packages rather than a postinstall.
+      - run: npm ci --ignore-scripts
       - name: Collect redacted snapshot
         id: collect
         continue-on-error: true
@@ -38,19 +55,68 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.FLEET_DASHBOARD_TOKEN }}
         run: |
           if [ -z "${GITHUB_TOKEN}" ]; then
-            echo "FLEET_DASHBOARD_TOKEN unset — keeping committed fixture snapshot"
+            echo "FLEET_DASHBOARD_TOKEN unset — the build will use the committed fixture"
             exit 1
           fi
           npm run collect
-      - name: Note fixture fallback
-        if: steps.collect.outcome != 'success'
-        run: echo "Deploying with public/data/snapshot.json fixture (collector skipped or failed)."
+      - name: Hand the fresh snapshot to the build
+        if: steps.collect.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: snapshot
+          path: public/data/snapshot.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # Never sees the PAT. Holds id-token:write only because the attestation needs
+  # it to sign, and that is precisely why it is not the job with the credential.
+  build:
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # When collection failed there is no artifact, and the committed fixture
+      # from checkout is what gets built — deliberately, so a dead credential
+      # degrades to stale-but-real rather than to an outage. The run still goes
+      # red; see the deploy job.
+      - name: Use the freshly collected snapshot
+        if: needs.collect.outputs.fresh == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: snapshot
+          path: public/data
       - run: npm run build
         env:
           VITE_BASE: /
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: dist/**
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
           path: dist
+
+  # Holds the Pages grants and nothing else — no PAT, no checkout, no npm.
+  deploy:
+    needs: [collect, build]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
       # The deploy above is deliberate: a stale-but-real fixture beats an outage.
@@ -61,7 +127,7 @@ jobs:
       #
       # Deploy first, then fail, so the site stays up and the failure is still seen.
       - name: Fail the run when the snapshot was not freshly collected
-        if: steps.collect.outcome != 'success'
+        if: needs.collect.outputs.fresh != 'true'
         run: |
           echo "::error::Deployed the committed fixture, not a fresh snapshot. \
           The published dashboard is stale. See the 'Collect redacted snapshot' step."

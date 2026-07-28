@@ -5,8 +5,7 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -16,11 +15,19 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # Nothing after checkout uses the git credential; persisting it writes
+          # GITHUB_TOKEN into .git/config for every later step to read.
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      # This job runs the test suite, which is the repo's own code — but the
+      # install itself does not need to execute dependency lifecycle scripts.
+      - run: npm ci --ignore-scripts
       - run: npm run ci
