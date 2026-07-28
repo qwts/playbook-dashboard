@@ -353,18 +353,58 @@ test('a rate limit is distinguished from a plain refusal', () => {
 test('retry delay honours the server before falling back to backoff', () => {
   const now = 1_000_000;
   assert.equal(retryDelayMs(res(403, { 'retry-after': '5' }), 0, now), 5000);
-  // x-ratelimit-reset is epoch seconds.
-  assert.equal(retryDelayMs(res(403, { 'x-ratelimit-reset': String(now / 1000 + 7) }), 0, now), 7000);
+  // x-ratelimit-reset is epoch seconds, and only speaks for a *primary* limit.
+  assert.equal(
+    retryDelayMs(
+      res(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 7) }),
+      0,
+      now,
+    ),
+    7000,
+  );
   // Neither header: exponential.
   assert.equal(retryDelayMs(res(429), 0, now), 1000);
   assert.equal(retryDelayMs(res(429), 2, now), 4000);
+});
+
+// x-ratelimit-reset rides on every response. Unless the budget is actually
+// spent it describes the hourly rollover, not this refusal — so it must not
+// become the delay for a limit it says nothing about.
+test('an unspent budget leaves the reset header out of the delay', () => {
+  const now = 1_000_000;
+  const hourlyRollover = String(now / 1000 + 3000);
+
+  // Secondary limit: the server's own retry-after wins over the rollover.
+  assert.equal(
+    retryDelayMs(
+      res(429, {
+        'retry-after': '5',
+        'x-ratelimit-remaining': '4837',
+        'x-ratelimit-reset': hourlyRollover,
+      }),
+      0,
+      now,
+    ),
+    5000,
+  );
+
+  // Bare 429: the server said nothing, so back off — do not read the rollover
+  // as an instruction and sit out the cap on every attempt.
+  assert.equal(
+    retryDelayMs(res(429, { 'x-ratelimit-remaining': '4837', 'x-ratelimit-reset': hourlyRollover }), 0, now),
+    1000,
+  );
 });
 
 test('a hostile or absurd delay is capped, so a run cannot be parked forever', () => {
   const now = 1_000_000;
   assert.equal(retryDelayMs(res(403, { 'retry-after': '86400' }), 0, now), MAX_BACKOFF_MS);
   assert.equal(
-    retryDelayMs(res(403, { 'x-ratelimit-reset': String(now / 1000 + 99999) }), 0, now),
+    retryDelayMs(
+      res(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 99999) }),
+      0,
+      now,
+    ),
     MAX_BACKOFF_MS,
   );
   assert.equal(retryDelayMs(res(429), 20, now), MAX_BACKOFF_MS);
@@ -481,4 +521,45 @@ test('a far-future reset stops further retrying instead of re-spending the budge
     },
   );
   assert.ok(calls <= MAX_ATTEMPTS + 1, `expected the budget to be spent once, saw ${calls} calls`);
+});
+
+// The mirror of the test above, and the realistic one. This workload runs
+// roughly 73 requests an hour against a budget of 5,000, so the primary limit
+// is effectively unreachable; a secondary limit from burst concurrency is what
+// will actually fire. The window closed on `x-ratelimit-reset` unconditionally,
+// and that header is present on every response — so the breaker was tripped by
+// the shape it cannot reason about and never by the one it was built for.
+test('a secondary limit is waited out, not treated as the budget running dry', async () => {
+  const hourlyRollover = Math.floor(Date.now() / 1000) + 50 * 60;
+  let calls = 0;
+  const count = await withStubbedFetch(
+    async () => {
+      calls += 1;
+      if (calls > 1) return new Response('[]', { status: 200 });
+      // Budget nearly untouched; the server asked for one second.
+      return limited(429, {
+        'retry-after': '1',
+        'x-ratelimit-remaining': '4837',
+        'x-ratelimit-reset': String(hourlyRollover),
+      });
+    },
+    async () => {
+      const result = await countOpenAlerts('example', 'dependabot');
+      assert.equal(rateLimitWindowIsOpen(), true, 'a five-second wait is not a spent budget');
+      return result;
+    },
+  );
+
+  assert.equal(calls, 2, 'the second attempt is the whole point of retry-after');
+  assert.equal(count, 0, 'a waited-out limit yields a real count, not an unknown');
+});
+
+test('a wait longer than the run will sit out closes the window, whatever its shape', async () => {
+  await withStubbedFetch(
+    async () => limited(429, { 'retry-after': '900', 'x-ratelimit-remaining': '4837' }),
+    async () => {
+      await countOpenAlerts('example', 'dependabot');
+      assert.equal(rateLimitWindowIsOpen(), false, 'fifteen minutes outlasts the run');
+    },
+  );
 });

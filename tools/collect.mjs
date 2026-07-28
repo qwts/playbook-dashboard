@@ -68,17 +68,33 @@ export function isRateLimited(response) {
   );
 }
 
+/**
+ * How long the server actually asked us to wait, or `null` if it did not say.
+ *
+ * The single answer to that question, because two callers need it and a second
+ * copy of this precedence is what let them disagree.
+ *
+ * `retry-after` is a direct instruction about *this* refusal and wins.
+ * `x-ratelimit-reset` is only an answer when `x-ratelimit-remaining` is `0`:
+ * the header rides on every response, and on a secondary limit or a bare 429
+ * it is just when the hourly window rolls over — up to an hour out, and
+ * nothing to do with why this request was refused. Reading it unconditionally
+ * turns an unrelated header into a delay, and worse, into a reason to stop.
+ */
+function serverRetryHintMs(response, now) {
+  const retryAfter = Number(response?.headers?.get('retry-after'));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
+  if (response?.headers?.get('x-ratelimit-remaining') !== '0') return null;
+  const reset = Number(response?.headers?.get('x-ratelimit-reset'));
+  if (!Number.isFinite(reset) || reset <= 0) return null;
+  const waitMs = reset * 1000 - now;
+  return waitMs > 0 ? waitMs : null;
+}
+
 /** Honours the server's own guidance before falling back to exponential backoff. */
 export function retryDelayMs(response, attempt, now = Date.now()) {
-  const retryAfter = Number(response?.headers?.get('retry-after'));
-  if (Number.isFinite(retryAfter) && retryAfter > 0) {
-    return Math.min(retryAfter * 1000, MAX_BACKOFF_MS);
-  }
-  const reset = Number(response?.headers?.get('x-ratelimit-reset'));
-  if (Number.isFinite(reset) && reset > 0) {
-    const waitMs = reset * 1000 - now;
-    if (waitMs > 0) return Math.min(waitMs, MAX_BACKOFF_MS);
-  }
+  const hint = serverRetryHintMs(response, now);
+  if (hint !== null) return Math.min(hint, MAX_BACKOFF_MS);
   return Math.min(2 ** attempt * 1000, MAX_BACKOFF_MS);
 }
 
@@ -96,7 +112,7 @@ export function resetCollectionHealth() {
 }
 
 /**
- * When a primary limit will not reopen inside this run's patience.
+ * When a limit will not lift inside this run's patience.
  *
  * A primary rate limit is account-wide, not per-endpoint: once it fires, every
  * remaining request is limited too, and each would independently spend its own
@@ -104,8 +120,13 @@ export function resetCollectionHealth() {
  * wait into tens of minutes — on an hourly schedule, in a concurrency group
  * that queues rather than supersedes.
  *
- * If the window will not reopen in time, retrying is not resilience; it is
- * spending the run. Stop retrying and let the counts be honestly unknown.
+ * If the wait will outlast the run's patience, retrying is not resilience; it
+ * is spending the run. Stop retrying and let the counts be honestly unknown.
+ *
+ * A wait the server asked for and we are willing to sit out must *not* latch
+ * this. On this workload — roughly 73 requests an hour against a budget of
+ * 5,000 — a secondary limit from burst concurrency is the failure that will
+ * actually happen, and it is the one worth waiting the few seconds for.
  */
 let rateLimitedUntilMs = null;
 
@@ -114,10 +135,8 @@ export function resetRateLimitWindow() {
 }
 
 function noteRateLimitWindow(response, now = Date.now()) {
-  const reset = Number(response?.headers?.get('x-ratelimit-reset'));
-  if (!Number.isFinite(reset) || reset <= 0) return;
-  const resetMs = reset * 1000;
-  if (resetMs - now > MAX_BACKOFF_MS) rateLimitedUntilMs = resetMs;
+  const hint = serverRetryHintMs(response, now);
+  if (hint !== null && hint > MAX_BACKOFF_MS) rateLimitedUntilMs = now + hint;
 }
 
 export function rateLimitWindowIsOpen(now = Date.now()) {
