@@ -53,3 +53,16 @@ jobs:
           path: dist
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
+      # The deploy above is deliberate: a stale-but-real fixture beats an outage.
+      # But the run must not be green. `continue-on-error` on the collect step means
+      # a dead credential, a revoked permission, or an empty publication set all
+      # produced a fully successful run — which is how the published snapshot sat
+      # ~20h stale on 2026-07-27 with nothing anywhere reporting a problem.
+      #
+      # Deploy first, then fail, so the site stays up and the failure is still seen.
+      - name: Fail the run when the snapshot was not freshly collected
+        if: steps.collect.outcome != 'success'
+        run: |
+          echo "::error::Deployed the committed fixture, not a fresh snapshot. \
+          The published dashboard is stale. See the 'Collect redacted snapshot' step."
+          exit 1

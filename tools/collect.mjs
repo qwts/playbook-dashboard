@@ -351,8 +351,19 @@ async function main() {
       .join(', ');
     warn(`repo lookups that failed before the visibility gate: ${tally}`);
   }
+  // An empty snapshot is published, not suppressed. Zero repos renders as
+  // "published 0 of N governed · N withheld" — visibly, unmistakably nothing.
+  // Falling back to the committed fixture instead would serve yesterday's posture
+  // numbers as though they were current, and nobody reads a plausible page twice.
+  // Obviously broken beats plausibly wrong on a board whose whole job is posture.
+  //
+  // The run still fails (see pages.yml) so the blank is noticed, not just served.
   if (repos.length === 0) {
-    warn('WARNING: no repos passed the publication gates — the dashboard will render empty');
+    warn(
+      `WARNING: no repos passed the publication gates — publishing an empty snapshot. ` +
+        `${governed.length} governed, ${notOptedIn} without publish: true, ` +
+        `${notObservedPublic} not observed public.`,
+    );
   }
 
   const snapshot = {
