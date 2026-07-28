@@ -269,8 +269,12 @@ async function main() {
   const candidates = governed.filter(isPublishable);
 
   const repos = [];
-  for (const entry of candidates) {
-    warn(`collect ${entry.name}`);
+  for (const [index, entry] of candidates.entries()) {
+    // Position, not identity. Gate 2 runs inside collectRepo, so a name logged
+    // here would be published *before* we know whether the repo passes it — and
+    // the repo that fails is exactly the one whose name must not appear in an
+    // Actions log. The candidate count is already public via `withheld`.
+    warn(`collect ${index + 1}/${candidates.length}`);
     const row = await collectRepo(entry);
     if (row) repos.push(row);
   }
