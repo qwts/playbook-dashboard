@@ -25,13 +25,80 @@ export function withheldCount(snapshot: Snapshot): number | null {
   return value;
 }
 
-export function sumOpenSecurity(repos: RepoSnapshot[]): number {
-  return repos.reduce((total, repo) => {
-    const d = repo.security.dependabotOpen ?? 0;
-    const c = repo.security.codeScanningOpen ?? 0;
-    const s = repo.security.secretScanningOpen ?? 0;
-    return total + d + c + s;
-  }, 0);
+export type Tone = 'ok' | 'warn' | 'danger' | 'muted';
+
+/**
+ * An open-alert total that keeps "could not be read" separate from "zero".
+ *
+ * `null` in `SecurityCounts` means the collector was denied the count, not that
+ * there are none. Collapsing the two produces a confidently clean repo exactly
+ * where the dashboard knows least — the one error that never prompts anyone to
+ * look.
+ */
+export type OpenSecurityTotal = {
+  /** Sum of the counts that could be read. The true total is at least this. */
+  known: number;
+  /** How many individual counts could not be read. */
+  unknown: number;
+};
+
+export function sumOpenSecurity(repos: RepoSnapshot[]): OpenSecurityTotal {
+  let known = 0;
+  let unknown = 0;
+
+  for (const repo of repos) {
+    const counts = [
+      repo.security?.dependabotOpen,
+      repo.security?.codeScanningOpen,
+      repo.security?.secretScanningOpen,
+    ];
+    for (const count of counts) {
+      // The snapshot is untrusted input: anything that is not a sane count is
+      // unknown, not zero. Negatives and NaN included.
+      if (typeof count === 'number' && Number.isFinite(count) && count >= 0) known += count;
+      else unknown += 1;
+    }
+  }
+
+  return { known, unknown };
+}
+
+/**
+ * `6` when fully known, `≥6` when only part of the total could be read, and `?`
+ * when none of it could. Never a bare number standing in for missing data.
+ */
+export function openSecurityLabel(total: OpenSecurityTotal): string {
+  if (total.unknown === 0) return String(total.known);
+  if (total.known === 0) return '?';
+  return `≥${total.known}`;
+}
+
+export function toneForCount(n: number | null): Tone {
+  if (n === null) return 'muted';
+  if (n === 0) return 'ok';
+  if (n < 3) return 'warn';
+  return 'danger';
+}
+
+/**
+ * A partially-read total is never green, however small the readable part is.
+ * Green is a claim of "nothing open here", which an incomplete read cannot make.
+ */
+export function toneForOpenSecurity(total: OpenSecurityTotal): Tone {
+  if (total.unknown > 0) return total.known >= 3 ? 'danger' : 'warn';
+  return toneForCount(total.known);
+}
+
+/**
+ * Most-exposed first. A repo with unreadable counts sorts above every repo with
+ * known counts: it cannot be ranked as safer than one that was actually
+ * measured, so it does not get to sit quietly at the bottom of the table.
+ */
+export function compareByExposure(a: RepoSnapshot, b: RepoSnapshot): number {
+  const ta = sumOpenSecurity([a]);
+  const tb = sumOpenSecurity([b]);
+  if (ta.unknown > 0 !== tb.unknown > 0) return ta.unknown > 0 ? -1 : 1;
+  return tb.known - ta.known;
 }
 
 export function countByStatus(repos: RepoSnapshot[], status: RepoSnapshot['status']): number {

@@ -2,15 +2,20 @@ import { useEffect, useState } from 'react';
 import {
   boolLabel,
   ciLabel,
+  compareByExposure,
   countByStatus,
   countCiFailing,
   countMissingCi,
   formatRelative,
   isSnapshotStale,
+  openSecurityLabel,
   sumOpenSecurity,
+  toneForCount,
+  toneForOpenSecurity,
   visibleRepos,
   withheldCount,
 } from './lib/aggregate';
+import type { Tone } from './lib/aggregate';
 import type { RepoSnapshot, Snapshot } from './types/snapshot';
 
 type LoadState =
@@ -18,18 +23,11 @@ type LoadState =
   | { status: 'error'; message: string }
   | { status: 'ready'; snapshot: Snapshot };
 
-function toneForCi(repo: RepoSnapshot): 'ok' | 'warn' | 'danger' | 'muted' {
+function toneForCi(repo: RepoSnapshot): Tone {
   const label = ciLabel(repo);
   if (label === 'success') return 'ok';
   if (label === 'no CI') return 'muted';
   if (label === 'running') return 'warn';
-  return 'danger';
-}
-
-function toneForCount(n: number | null): 'ok' | 'warn' | 'danger' | 'muted' {
-  if (n === null) return 'muted';
-  if (n === 0) return 'ok';
-  if (n < 3) return 'warn';
   return 'danger';
 }
 
@@ -156,7 +154,15 @@ export function App() {
         </div>
         <div className="stat">
           <div className="label">Open security</div>
-          <div className="value">{openSecurity}</div>
+          <div className="value" data-tone={toneForOpenSecurity(openSecurity)}>
+            {openSecurityLabel(openSecurity)}
+            {openSecurity.unknown > 0 ? (
+              <span className="muted" style={{ fontSize: '0.9rem', fontWeight: 500 }}>
+                {' '}
+                · {openSecurity.unknown} unreadable
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="stat">
           <div className="label">CI failing</div>
@@ -188,7 +194,7 @@ export function App() {
             </thead>
             <tbody>
               {[...repos]
-                .sort((a, b) => sumOpenSecurity([b]) - sumOpenSecurity([a]))
+                .sort(compareByExposure)
                 .map((repo) => {
                   const total = sumOpenSecurity([repo]);
                   return (
@@ -220,8 +226,16 @@ export function App() {
                         </span>
                       </td>
                       <td>
-                        <span className="badge" data-tone={toneForCount(total)}>
-                          {total}
+                        <span
+                          className="badge"
+                          data-tone={toneForOpenSecurity(total)}
+                          title={
+                            total.unknown > 0
+                              ? `${total.unknown} of 3 counts could not be read — the true total is at least ${total.known}`
+                              : undefined
+                          }
+                        >
+                          {openSecurityLabel(total)}
                         </span>
                       </td>
                     </tr>

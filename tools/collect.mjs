@@ -166,12 +166,26 @@ async function fetchCi(repo, defaultBranch) {
   };
 }
 
-function parseCodexSync(entry) {
-  if (entry.codexSync && typeof entry.codexSync === 'object') {
-    if (typeof entry.codexSync.enabled === 'boolean') return entry.codexSync.enabled;
+/**
+ * `true`/`false` only when the manifest says so, `null` when it is silent.
+ *
+ * The previous default published an unconfigured repo as managed, so a repo
+ * nobody had set up and a repo deliberately enabled were indistinguishable on
+ * the page — and the ambiguity resolved toward the one that prompts no
+ * follow-up. That matters most during onboarding, when manifest entries are
+ * least complete and someone is most likely to read the dashboard to decide
+ * whether a repo is ready.
+ *
+ * If "omission means default-on" is genuinely the fleet contract, it belongs in
+ * the manifest as an explicit field, not in a fallback here where the reader
+ * cannot see it.
+ */
+export function parseCodexSync(entry) {
+  const codexSync = entry?.codexSync;
+  if (codexSync && typeof codexSync === 'object' && !Array.isArray(codexSync)) {
+    if (typeof codexSync.enabled === 'boolean') return codexSync.enabled;
   }
-  // Manifest omission means managed/default-on for consumers in this fleet.
-  return true;
+  return null;
 }
 
 /**

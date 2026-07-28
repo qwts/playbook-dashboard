@@ -138,6 +138,19 @@ a {
   letter-spacing: -0.03em;
 }
 
+/* A headline figure that is partly unreadable must not read as a clean count. */
+.stat .value[data-tone='ok'] {
+  color: var(--ok);
+}
+
+.stat .value[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.stat .value[data-tone='danger'] {
+  color: var(--danger);
+}
+
 .section {
   margin-bottom: 2.25rem;
 }

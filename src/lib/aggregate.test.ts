@@ -4,12 +4,15 @@ import type { CiStatus, RepoSnapshot, SecurityCounts, Snapshot } from '../types/
 import {
   boolLabel,
   ciLabel,
+  compareByExposure,
   countByStatus,
   countCiFailing,
   countMissingCi,
   formatRelative,
   isSnapshotStale,
+  openSecurityLabel,
   sumOpenSecurity,
+  toneForOpenSecurity,
   visibleRepos,
   withheldCount,
 } from './aggregate.ts';
@@ -124,25 +127,87 @@ test('status counts separate active from onboarding', () => {
   assert.equal(countByStatus(repos, 'retired'), 0);
 });
 
-test('open security totals every alert type across the fleet', () => {
+test('open security totals every alert type across the fleet when all are known', () => {
   const repos = [
     repo({ security: counts({ dependabotOpen: 6 }) }),
     repo({ security: counts({ codeScanningOpen: 1, secretScanningOpen: 2 }) }),
   ];
 
-  assert.equal(sumOpenSecurity(repos), 9);
-  assert.equal(sumOpenSecurity([]), 0);
+  assert.deepEqual(sumOpenSecurity(repos), { known: 9, unknown: 0 });
+  assert.deepEqual(sumOpenSecurity([]), { known: 0, unknown: 0 });
 });
 
-test(
-  'a repo with unreadable counts is not reported as a clean zero',
-  { todo: 'tracked in qwts/playbook-dashboard#3' },
-  () => {
-    const unknown = repo({ security: counts({ dependabotOpen: null }) });
+test('a repo with unreadable counts is not reported as a clean zero', () => {
+  const unknown = repo({ security: counts({ dependabotOpen: null }) });
+  const total = sumOpenSecurity([unknown]);
 
-    assert.notEqual(sumOpenSecurity([unknown]), 0);
-  },
-);
+  assert.deepEqual(total, { known: 0, unknown: 1 });
+  assert.notEqual(openSecurityLabel(total), '0');
+  assert.notEqual(toneForOpenSecurity(total), 'ok');
+});
+
+test('an entirely unreadable repo reports unknown, not zero', () => {
+  const total = sumOpenSecurity([
+    repo({
+      security: counts({ dependabotOpen: null, codeScanningOpen: null, secretScanningOpen: null }),
+    }),
+  ]);
+
+  assert.deepEqual(total, { known: 0, unknown: 3 });
+  assert.equal(openSecurityLabel(total), '?');
+  assert.equal(toneForOpenSecurity(total), 'warn');
+});
+
+test('a mixed total states the floor it knows, and is never green', () => {
+  const total = sumOpenSecurity([
+    repo({ security: counts({ dependabotOpen: 2, codeScanningOpen: null }) }),
+  ]);
+
+  assert.deepEqual(total, { known: 2, unknown: 1 });
+  assert.equal(openSecurityLabel(total), '≥2');
+  assert.equal(toneForOpenSecurity(total), 'warn');
+});
+
+test('a known-high partial total escalates rather than merely warning', () => {
+  const total = sumOpenSecurity([
+    repo({ security: counts({ dependabotOpen: 7, secretScanningOpen: null }) }),
+  ]);
+
+  assert.equal(openSecurityLabel(total), '≥7');
+  assert.equal(toneForOpenSecurity(total), 'danger');
+});
+
+test('a fully-known zero is still allowed to be green', () => {
+  const total = sumOpenSecurity([repo()]);
+
+  assert.deepEqual(total, { known: 0, unknown: 0 });
+  assert.equal(openSecurityLabel(total), '0');
+  assert.equal(toneForOpenSecurity(total), 'ok');
+});
+
+test('malformed counts in an untrusted snapshot are unknown, not zero', () => {
+  for (const bad of [undefined, 'three', Number.NaN, -1, {}, [], true, Infinity]) {
+    const total = sumOpenSecurity([
+      repo({ security: counts({ dependabotOpen: bad as unknown as number }) }),
+    ]);
+
+    assert.equal(total.unknown, 1, `${JSON.stringify(bad)} should count as unreadable`);
+    assert.notEqual(toneForOpenSecurity(total), 'ok');
+  }
+});
+
+test('a repo with unreadable counts sorts above one that was actually measured', () => {
+  const measuredHigh = repo({ name: 'measured', security: counts({ dependabotOpen: 9 }) });
+  const partlyUnknown = repo({ name: 'unknown', security: counts({ dependabotOpen: null }) });
+  const clean = repo({ name: 'clean' });
+
+  const sorted = [clean, measuredHigh, partlyUnknown].sort(compareByExposure);
+
+  assert.deepEqual(
+    sorted.map((r) => r.name),
+    ['unknown', 'measured', 'clean'],
+  );
+});
 
 test('CI failures count, but pending and unbuilt repos do not', () => {
   const repos = [

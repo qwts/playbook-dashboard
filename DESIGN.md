@@ -105,6 +105,36 @@ gates emit no `delta` at all. The cap exists because the threat model treats the
 manifest as attacker-controlled, and unbounded free text reaching a public page
 is a blast radius worth bounding regardless of who authored it.
 
+## Decision: unknown is a value, not a default
+
+Missing data is never resolved in the direction that prompts no follow-up. This
+is one rule with two former violations (#3, #8), and it applies to any field
+added later.
+
+**Counts.** `null` in `SecurityCounts` means the collector was denied the count,
+not that there are none. `sumOpenSecurity` returns `{ known, unknown }` rather
+than a single number, so a partially-read total can say what it actually knows:
+`6` when fully read, `≥6` when part could not be, `?` when none could. A total
+with any unknown is never green — green claims "nothing open here", which an
+incomplete read cannot claim. A repo with unreadable counts also sorts *above*
+every measured repo in the rollup, because it cannot be ranked as safer than
+something that was actually measured.
+
+**Manifest fields.** An absent field publishes `null`, never a compliant-looking
+default. A repo nobody has configured and a repo deliberately configured must
+not be indistinguishable on the page. If "omission means X" is genuinely the
+fleet contract, it belongs in the manifest as an explicit field, where the
+reader can see it — not in a collector fallback, where they cannot.
+
+**Untrusted input.** The snapshot is fetched by a browser and may be stale,
+cached, or tampered with. Anything that is not a sane value — wrong type,
+negative, `NaN` — is unknown, not zero. Validation happens where the value
+enters, not where it is displayed.
+
+The failure this prevents is specific: a dashboard that looks most reassuring
+exactly where it knows least. For a tool whose entire job is reporting posture,
+that is the one error nobody ever investigates.
+
 ## Local development
 
 - Browse URL: `https://local.dev.zts1.com:8443/`
