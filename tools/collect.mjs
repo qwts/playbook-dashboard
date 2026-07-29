@@ -6,6 +6,12 @@
  * Publishes counts and boolean posture only — never alert titles, paths,
  * CVEs, secret material, or private vulnerability report bodies.
  *
+ * That rule is enforced, not just stated: `tools/snapshot-schema.mjs` is the
+ * executable contract, and `npm run validate` refuses to publish an artifact
+ * that violates it. Adding a field here without adding it there fails the run —
+ * deliberately, because a comment cannot fail a build and the published surface
+ * was otherwise free to grow silently on the next hourly cron.
+ *
  * Publication is opt-in and double-gated (see DESIGN.md): a repo is collected
  * only if the manifest sets `publish: true`, and it is emitted only if GitHub
  * reports it as public at collection time. A repo that fails either gate

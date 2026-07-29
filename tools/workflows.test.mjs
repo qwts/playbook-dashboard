@@ -203,3 +203,43 @@ test('the attestation subject is the individual files, not a tarball', () => {
   const deploy = JOBS.slice(JOBS.indexOf('\n  deploy:'));
   assert.doesNotMatch(deploy, /attest-build-provenance/u, 'attesting there coarsens the subject');
 });
+
+// #9. This gate is the one that fails *closed*. The stale and degraded gates
+// deploy first and then redden the run, because a legible degraded dashboard
+// beats an outage. That trade does not hold here: a snapshot failing validation
+// may contain something the redaction contract forbids, and publishing it to
+// find out is the entire failure.
+test('an artifact that fails the redaction contract is never deployed', () => {
+  const collect = JOBS.slice(JOBS.indexOf('\n  collect:'), JOBS.indexOf('\n  build:'));
+
+  const validateAt = collect.indexOf('npm run validate');
+  const collectAt = collect.indexOf('npm run collect');
+  const handoffAt = collect.indexOf('Hand the fresh snapshot to the build');
+  assert.ok(validateAt > 0, 'the collect job never validates the snapshot');
+  assert.ok(validateAt > collectAt, 'validation must run after collection');
+  assert.ok(handoffAt > validateAt, 'nothing may leave this job before it is validated');
+
+  // The step must be able to fail the job. `continue-on-error` here would turn
+  // the one fail-closed gate into another advisory warning.
+  const step = collect.slice(collect.indexOf('Validate the snapshot'), handoffAt);
+  assert.doesNotMatch(step, /continue-on-error/u, 'the validation gate must fail the job');
+});
+
+test('only a run that actually collected may demand a fresh snapshot', () => {
+  // The committed fixture is deliberately old — being the fallback is its job —
+  // so `--fresh` against it would fail every run where collection failed, in
+  // the one situation the fixture exists to cover.
+  const collect = JOBS.slice(JOBS.indexOf('\n  collect:'), JOBS.indexOf('\n  build:'));
+  assert.match(collect, /FRESH:\s*\$\{\{\s*steps\.collect\.outcome == 'success'\s*\}\}/u);
+  assert.match(collect, /npm run validate -- --fresh/u);
+  assert.match(collect, /npm run validate\n/u, 'and a plain run for the fixture path');
+});
+
+test('the same validator guards CI and the workflow', () => {
+  // Two definitions of "is this publishable" drift, and the drift is invisible
+  // until one of them is wrong.
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(pkg.scripts.ci, /npm run validate/u, 'npm run ci must validate too');
+  assert.match(pkg.scripts.validate, /tools\/validate-snapshot\.mjs/u);
+  assert.match(STRUCTURE, /npm run validate/u, 'and the workflow runs the same script');
+});

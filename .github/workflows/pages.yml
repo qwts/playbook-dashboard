@@ -107,6 +107,25 @@ jobs:
             exit 1
           fi
           npm run collect
+      # Fails closed, unlike every other gate here. The stale and degraded gates
+      # deploy first and then redden the run, because a legible degraded
+      # dashboard beats an outage. That trade does not hold for this one: a
+      # snapshot failing validation may contain something the redaction contract
+      # forbids, and publishing it to find out is the entire failure. A non-zero
+      # exit fails this job, so build and deploy never run and the previously
+      # published artifact stays where it is.
+      - name: Validate the snapshot against the redaction contract
+        env:
+          # Bound, not spliced. Only a run that actually collected may demand
+          # freshness — the committed fixture is deliberately old, because being
+          # the fallback is its job.
+          FRESH: ${{ steps.collect.outcome == 'success' }}
+        run: |
+          if [ "${FRESH}" = "true" ]; then
+            npm run validate -- --fresh
+          else
+            npm run validate
+          fi
       - name: Hand the fresh snapshot to the build
         if: steps.collect.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
