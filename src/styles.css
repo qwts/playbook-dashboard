@@ -295,20 +295,43 @@ tr:last-child td {
   font-weight: 500;
 }
 
-.link-button {
-  margin-left: 0.5rem;
-  padding: 0;
-  border: 0;
-  border-bottom: 1px solid transparent;
+/* Sign-out was a fourth pill in the metadata row, which read as data rather
+   than as a control. It sits beside the brand now: still quiet, but the only
+   button in the header. */
+.hero-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.account-who {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.signout {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
   background: none;
   color: inherit;
   font: inherit;
+  font-size: 0.78rem;
   cursor: pointer;
 }
 
-.link-button:hover {
+.signout:hover,
+.signout:focus-visible {
+  border-color: var(--accent);
   color: var(--accent);
-  border-bottom-color: var(--accent);
 }
 
 .signin {

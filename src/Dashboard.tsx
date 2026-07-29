@@ -92,12 +92,14 @@ function AccountRow({ session, onSignOut }: DashboardProps) {
   const who = session.login ?? session.email ?? 'signed in';
 
   return (
-    <span className="pill">
-      {PROVIDER_LABELS[session.provider]} · {who}
-      <button type="button" className="link-button" onClick={onSignOut}>
-        sign out
+    <div className="account">
+      <span className="account-who">
+        {PROVIDER_LABELS[session.provider]} · {who}
+      </span>
+      <button type="button" className="signout" onClick={onSignOut}>
+        Sign out
       </button>
-    </span>
+    </div>
   );
 }
 
@@ -165,7 +167,10 @@ export function Dashboard({ session, onSignOut }: DashboardProps) {
   return (
     <div className="app">
       <header className="hero">
-        <div className="brand">Playbook Dashboard</div>
+        <div className="hero-top">
+          <div className="brand">Playbook Dashboard</div>
+          <AccountRow session={session} onSignOut={onSignOut} />
+        </div>
         <h1>Governed fleet posture</h1>
         <p>
           Redacted view of security counts, repository properties, and CI status across the qwts
@@ -191,7 +196,6 @@ export function Dashboard({ session, onSignOut }: DashboardProps) {
           <span className="pill">
             source {state.snapshot.source.manifestRepo}/{state.snapshot.source.manifestPath}
           </span>
-          <AccountRow session={session} onSignOut={onSignOut} />
         </div>
       </header>
 
