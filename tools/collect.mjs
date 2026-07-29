@@ -606,6 +606,17 @@ async function main() {
 }
 
 /**
+ * Which floor flag, when known-false, explains a `null` count as "feature
+ * disabled" rather than "read refused". A count with no entry here is never
+ * excused. See the rule on `degradedReasons`.
+ */
+const FLOOR_FLAG_FOR_COUNT = {
+  dependabotOpen: 'dependabotAlerts',
+  codeScanningOpen: 'codeqlConfigured',
+  secretScanningOpen: 'secretScanning',
+};
+
+/**
  * Why a snapshot that was written successfully still knows less than it looks
  * like it knows. Empty means the run read everything it set out to read.
  *
@@ -617,11 +628,27 @@ async function main() {
  * while unable to read half the fleet is a third state, and it looked like the
  * good one: green check, published page, question marks nobody was told about.
  *
- * Derived from the artifact rather than from the health counters alone, because
- * the artifact is what gets published. A 404 yields a `null` count without
- * touching a counter, and a failed gate call increments one for a repo that was
- * never going to be published. What matters is whether the page will show a
- * `?`, and that is a property of the snapshot.
+ * Two sources, and they overlap on purpose. The artifact is what gets
+ * published: a 404 yields a `null` count without touching a counter, so only
+ * the snapshot knows whether the page will show a `?`. The health counters see
+ * what the artifact cannot: a denied or rate-limited read against a repo the
+ * gates then withheld leaves no trace in `repos` at all. Including both means
+ * a denied posture read on a published repo is reported twice — once as
+ * `denied`, once as `unreadable` — and a failed gate call reddens the run for
+ * a repo that was never going to be published. Accepted, deliberately: this
+ * gate exists because its failure mode is silence, and every overlap errs in
+ * the loud direction.
+ *
+ * A `null` count is only unreadable when the read could have succeeded. GitHub
+ * answers 403 on `dependabot/alerts` when Dependabot alerts are disabled and
+ * 404 on `code-scanning/alerts` when code scanning was never enabled —
+ * permanent, owner-chosen states, not failures, and reddening every hourly run
+ * over them forever would make this gate noise (the `codexSyncEnabled`
+ * argument below, one field over). So each count is excused by its floor flag
+ * when that flag is known-false: the feature is off, the missing number is the
+ * owner's choice, and the page already says so via the flag itself. When the
+ * flag is `true` or itself unknown, a `null` count stays unreadable — the
+ * feature was (or may have been) on, and the collector still learned nothing.
  *
  * Counts only, never which repo — same contract as everything else that leaves
  * this file, and the reason string reaches a public Actions log.
@@ -640,10 +667,16 @@ export function degradedReasons(snapshot) {
     // most governed repos are silent about it today, and reddening every run
     // over an absent declaration would make this gate noise within a week. The
     // gate is for what the collector could not *read*.
-    for (const value of Object.values(repo?.security ?? {})) {
-      if (!Number.isInteger(value) || value < 0) unknown += 1;
+    const floor = repo?.securityFloor ?? {};
+    for (const [field, value] of Object.entries(repo?.security ?? {})) {
+      if (Number.isInteger(value) && value >= 0) continue;
+      // Excused only for `null`, and only when the flag is known-false: a
+      // malformed value is corruption whatever the owner chose, and an unknown
+      // flag cannot vouch for anything.
+      if (value === null && floor[FLOOR_FLAG_FOR_COUNT[field]] === false) continue;
+      unknown += 1;
     }
-    for (const value of Object.values(repo?.securityFloor ?? {})) {
+    for (const value of Object.values(floor)) {
       if (typeof value !== 'boolean') unknown += 1;
     }
   }

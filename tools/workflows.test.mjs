@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { reportDegradation } from './collect.mjs';
 import { test } from 'node:test';
 
@@ -18,19 +19,64 @@ import { test } from 'node:test';
 const PAGES = readFileSync(new URL('../.github/workflows/pages.yml', import.meta.url), 'utf8');
 
 /**
- * The same file with whole-line comments removed.
+ * A file with whole-line comments removed.
  *
- * This file documents its own reasoning at length, and several of those
+ * These files document their own reasoning at length, and several of those
  * comments quote the very expressions asserted below — a structural check run
  * against the raw text matches the prose describing the rule as readily as the
  * rule. Two of these tests failed that way on first run.
  */
-const STRUCTURE = PAGES.split('\n')
-  .filter((line) => !/^\s*#/u.test(line))
-  .join('\n');
+function structureOf(source) {
+  return source
+    .split('\n')
+    .filter((line) => !/^\s*#/u.test(line))
+    .join('\n');
+}
+
+const STRUCTURE = structureOf(PAGES);
 
 /** Just the `jobs:` mapping, so trigger keys are not mistaken for job names. */
 const JOBS = STRUCTURE.slice(STRUCTURE.indexOf('\njobs:'));
+
+/**
+ * Every workflow, not just pages.yml. The invariants that hold per-file —
+ * bounded jobs, no expression spliced into a shell — rot precisely by someone
+ * adding a workflow this file never heard of.
+ */
+const WORKFLOW_DIR = fileURLToPath(new URL('../.github/workflows/', import.meta.url));
+const WORKFLOWS = readdirSync(WORKFLOW_DIR)
+  .filter((name) => /\.ya?ml$/u.test(name))
+  .sort()
+  .map((name) => [name, structureOf(readFileSync(join(WORKFLOW_DIR, name), 'utf8'))]);
+
+/**
+ * Every `run:` script in a workflow, whatever YAML scalar shape it takes.
+ *
+ * The first version of the interpolation guard matched only `run: |` blocks at
+ * one exact indentation, so a single-line `- run:` or a folded `run: >` was a
+ * hole: an expression spliced there passed the guard. Extracted structurally
+ * instead — from each `run:` key through every following line indented deeper
+ * than the key — which covers plain, literal, and folded scalars alike.
+ */
+function runScripts(structure) {
+  const lines = structure.split('\n');
+  const scripts = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const key = /^(\s*(?:- )?)run:(.*)$/u.exec(lines[i]);
+    if (!key) continue;
+    const indent = key[1].length;
+    let body = key[2];
+    let j = i + 1;
+    for (; j < lines.length; j += 1) {
+      const depth = lines[j].search(/\S/u);
+      if (lines[j].trim() !== '' && depth <= indent) break;
+      body += `\n${lines[j]}`;
+    }
+    scripts.push(body);
+    i = j - 1;
+  }
+  return scripts;
+}
 
 // The one-character version of this bug ships silently. `continue-on-error`
 // makes a failed step's *conclusion* success — that is the entire purpose of
@@ -54,18 +100,30 @@ test('the step allowed to fail is the only one allowed to fail', () => {
   assert.match(STRUCTURE, /id:\s*collect\n\s*continue-on-error:\s*true/u);
 });
 
-test('every job is bounded, so a wedged run cannot hold the group for six hours', () => {
-  const jobs = [...JOBS.matchAll(/^ {2}([a-z][\w-]*):$/gmu)].map((m) => m[1]);
+test('every job in every workflow is bounded, so a wedged run cannot hold a runner for six hours', () => {
+  // The list pin is for pages.yml alone: its jobs partition one credential and
+  // two grants, so a job appearing or vanishing must be looked at, not skipped.
+  const pagesJobs = [...JOBS.matchAll(/^ {2}([a-z][\w-]*):$/gmu)].map((m) => m[1]);
   assert.deepEqual(
-    jobs,
+    pagesJobs,
     ['collect', 'build', 'attest', 'deploy'],
     'job list changed — check the bounds',
   );
 
-  const timeouts = [...JOBS.matchAll(/^ {4}timeout-minutes:\s*(\d+)$/gmu)];
-  assert.equal(timeouts.length, jobs.length, 'every job needs its own timeout-minutes');
-  for (const [, minutes] of timeouts) {
-    assert.ok(Number(minutes) <= 30, `${minutes}m is not a bound worth having`);
+  // The bound is for every file: DESIGN.md says "every job declares
+  // `timeout-minutes`", and ci.yml shipped without one for as long as this
+  // test only read pages.yml.
+  assert.ok(WORKFLOWS.length >= 2, 'the workflow directory went missing or empty');
+  for (const [name, structure] of WORKFLOWS) {
+    const jobsBlock = structure.slice(structure.indexOf('\njobs:'));
+    const jobs = [...jobsBlock.matchAll(/^ {2}([a-z][\w-]*):$/gmu)].map((m) => m[1]);
+    assert.ok(jobs.length > 0, `${name}: found no jobs — extraction broke or the file is empty`);
+
+    const timeouts = [...jobsBlock.matchAll(/^ {4}timeout-minutes:\s*(\d+)$/gmu)];
+    assert.equal(timeouts.length, jobs.length, `${name}: every job needs its own timeout-minutes`);
+    for (const [, minutes] of timeouts) {
+      assert.ok(Number(minutes) <= 30, `${name}: ${minutes}m is not a bound worth having`);
+    }
   }
 });
 
@@ -93,14 +151,26 @@ test('a degraded collection reddens the run and still publishes', () => {
   );
 });
 
-// A job output is data crossing a boundary. Bound to env, never spliced into
+// An expression is data crossing a boundary. Bound to env, never spliced into
 // the shell — the rule does not get an exception for strings we believe we own.
-test('no job output is interpolated into a run script', () => {
-  const runBodies = [...STRUCTURE.matchAll(/^ {8}run: \|\n((?: {10}.*\n|\n)*)/gmu)].map((m) => m[1]);
-  assert.ok(runBodies.length >= 3, `expected the run scripts, found ${runBodies.length}`);
-  for (const body of runBodies) {
-    assert.doesNotMatch(body, /\$\{\{/u, `an expression is spliced into a shell script:\n${body}`);
+// Checked across every scalar shape and every workflow: the first version of
+// this guard matched only `run: |` blocks at one indentation, which made a
+// single-line `- run:` a silent exemption.
+test('no expression is interpolated into a run script, in any workflow', () => {
+  let total = 0;
+  for (const [name, structure] of WORKFLOWS) {
+    for (const body of runScripts(structure)) {
+      total += 1;
+      assert.doesNotMatch(
+        body,
+        /\$\{\{/u,
+        `${name}: an expression is spliced into a shell script:\n${body}`,
+      );
+    }
   }
+  // A count, so a regression in the extraction fails loudly instead of
+  // quietly asserting nothing about nothing.
+  assert.ok(total >= 8, `expected at least the 8 known run scripts, found ${total}`);
 });
 
 test('third-party actions are pinned to a commit sha', () => {
@@ -202,4 +272,18 @@ test('the attestation subject is the individual files, not a tarball', () => {
 
   const deploy = JOBS.slice(JOBS.indexOf('\n  deploy:'));
   assert.doesNotMatch(deploy, /attest-build-provenance/u, 'attesting there coarsens the subject');
+});
+
+// `upload-pages-artifact` tars dist wholesale; plain `upload-artifact`
+// defaults to `include-hidden-files: false`. The attestation copy must carry
+// the same file set as the deployed one, or the first dotfile someone adds to
+// dist — `.well-known/security.txt`, `.vite/manifest.json` — deploys
+// unattested, which is the exact gap the attest job exists to close.
+test('the attestation copy of dist carries hidden files, like the deployed one', () => {
+  const build = JOBS.slice(JOBS.indexOf('\n  build:'), JOBS.indexOf('\n  attest:'));
+  assert.match(
+    build,
+    /name: site\n\s*path: dist\n\s*include-hidden-files: true\n\s*if-no-files-found: error/u,
+    'the site artifact must include dotfiles so nothing deploys unattested',
+  );
 });

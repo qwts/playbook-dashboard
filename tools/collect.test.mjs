@@ -626,10 +626,9 @@ test('each way a read can go missing is named separately', () => {
   ]);
 });
 
-// Derived from the artifact, not the counters. A 404 yields a null count
-// without touching a counter, and a failed gate call increments one for a repo
-// that was never going to be published. What matters is whether the page shows
-// a `?`, and that is a property of the snapshot.
+// The artifact leg of the gate. A 404 yields a null count without touching a
+// counter, so only the snapshot knows the page will show a `?` — the counters
+// are the other leg, tested above, and they overlap by design.
 test('an unreadable posture field is degradation even when no counter moved', () => {
   const reasons = degradedReasons(
     snap({ repos: [healthyRepo({ security: { dependabotOpen: null, codeScanningOpen: 0, secretScanningOpen: 0 } })] }),
@@ -660,6 +659,64 @@ test('a malformed count from an untrusted snapshot is unreadable, not zero', () 
     );
     assert.deepEqual(reasons, ['1 posture fields unreadable'], `${JSON.stringify(bad)} is unknown`);
   }
+});
+
+// GitHub answers 403 on `dependabot/alerts` when Dependabot alerts are
+// disabled and 404 on `code-scanning/alerts` when code scanning was never
+// enabled — permanent, owner-chosen states. A repo that has chosen not to run
+// a scanner must not redden every hourly run forever; the missing number is
+// already explained on the page by the floor flag itself.
+test('a null count for a feature the owner disabled is a choice, not a failed read', () => {
+  const base = healthyRepo();
+  for (const [count, flag] of [
+    ['dependabotOpen', 'dependabotAlerts'],
+    ['codeScanningOpen', 'codeqlConfigured'],
+    ['secretScanningOpen', 'secretScanning'],
+  ]) {
+    const repo = healthyRepo({
+      security: { ...base.security, [count]: null },
+      securityFloor: { ...base.securityFloor, [flag]: false },
+    });
+    assert.deepEqual(degradedReasons(snap({ repos: [repo] })), [], `${flag}: false explains ${count}: null`);
+  }
+});
+
+test('a null count with the feature enabled is a read the collector lost', () => {
+  const base = healthyRepo();
+  const repo = healthyRepo({
+    security: { ...base.security, codeScanningOpen: null },
+    securityFloor: { ...base.securityFloor, codeqlConfigured: true },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [repo] })), ['1 posture fields unreadable']);
+});
+
+// An unknown flag cannot vouch for anything: both the flag and the count went
+// unread, and both are gaps the page will show.
+test('an unknown flag does not excuse its count', () => {
+  const base = healthyRepo();
+  const repo = healthyRepo({
+    security: { ...base.security, codeScanningOpen: null },
+    securityFloor: { ...base.securityFloor, codeqlConfigured: null },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [repo] })), ['2 posture fields unreadable']);
+});
+
+// The pairing is per-feature, and the excuse is only for `null`. One scanner
+// being off says nothing about another scanner's missing count, and a
+// malformed value is corruption whatever the owner chose.
+test('a disabled feature excuses only its own null, nothing else', () => {
+  const base = healthyRepo();
+  const crossed = healthyRepo({
+    security: { ...base.security, dependabotOpen: null },
+    securityFloor: { ...base.securityFloor, codeqlConfigured: false, dependabotAlerts: true },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [crossed] })), ['1 posture fields unreadable']);
+
+  const malformed = healthyRepo({
+    security: { ...base.security, codeScanningOpen: 'three' },
+    securityFloor: { ...base.securityFloor, codeqlConfigured: false },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [malformed] })), ['1 posture fields unreadable']);
 });
 
 test('nothing hostile in a snapshot reaches the reason string', () => {

@@ -160,6 +160,11 @@ jobs:
         with:
           name: site
           path: dist
+          # `upload-pages-artifact` above tars dist wholesale; this action
+          # skips dotfiles by default. The two copies must carry the same file
+          # set, or a future `.well-known/` or `.vite/` in dist deploys
+          # unattested — the exact gap this job exists to close.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 
@@ -177,8 +182,9 @@ jobs:
   # jobs but would attest the Pages *tarball* — one subject instead of many, and
   # `data/snapshot.json` would stop being individually verifiable. This
   # repository's product is auditable claims about security posture; binding the
-  # published snapshot by digest to the run that collected it is that product,
-  # not a nicety. See DESIGN.md.
+  # published snapshot by digest to a run of this workflow is that product,
+  # not a nicety. Provenance, not freshness — a red run attests its fixture
+  # honestly. See DESIGN.md.
   attest:
     needs: build
     runs-on: ubuntu-latest

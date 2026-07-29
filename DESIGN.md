@@ -159,9 +159,19 @@ already holds `id-token: write` for `deploy-pages`, so it looked like the
 cheapest answer. It attests the Pages **tarball** — one subject instead of many.
 `data/snapshot.json` would stop being individually verifiable, and for a
 repository whose product is auditable claims about security posture, binding the
-published snapshot by digest to the run that collected it *is* the product. A
-reader can check that a number came from a real collection run; coarsening the
-subject to a tarball removes that and is hard to walk back.
+published snapshot by digest to a run of this workflow *is* the product. A
+reader can check where the bytes came from; coarsening the subject to a tarball
+removes that and is hard to walk back.
+
+**What the attestation proves — and what it does not.** Provenance: these exact
+bytes were produced by this workflow, at this commit, in this run. Not
+freshness. A run whose credential died still builds, attests, and publishes the
+committed fixture, and its attestation is valid and never revoked — the fixture
+genuinely *was* produced by this workflow at that commit. Freshness lives in
+the run's conclusion, which is exactly what the gates in the next section
+redden. A verifier who cares that a number is *current*, not merely authentic,
+must check both: the digest against the attestation, and the attested run's
+conclusion.
 
 **Rejected: leaving it in `build`.** Best granularity, but it keeps a signing
 grant beside the toolchain that executes third-party build code — the thing
@@ -203,13 +213,21 @@ discarding the better artifact to report the smaller problem. Both gates run
 *after* `deploy-pages` for the same reason #20 established: a legible degraded
 dashboard beats an outage.
 
-**Degradation is read from the artifact, not the counters.** A 404 yields a
-`null` count without touching a health counter, and a failed gate call
-increments one for a repo that was never going to be published. The question the
-gate asks is whether the page will show a `?`, and that is a property of the
-snapshot. A fact the manifest never asserted (`codexSyncEnabled`) is not a read
-that failed and does not count — a gate that is always red is a gate nobody
-reads.
+**Degradation is read from the artifact and the counters, overlapping on
+purpose.** A 404 yields a `null` count without touching a health counter, so
+only the snapshot knows whether the page will show a `?`; a denied read against
+a repo the gates then withheld leaves no trace in the snapshot, so only the
+counters see it. The overlap means a denied posture read can be reported twice
+and a failed gate call reddens the run for a repo that was never going to be
+published — accepted, because this gate exists to defeat silence and every
+overlap errs loud.
+
+Not every `null` is a failed read. A fact the manifest never asserted
+(`codexSyncEnabled`) does not count, and neither does a count whose feature the
+owner turned off — GitHub answers 403/404 on the alerts endpoints for a
+disabled scanner, a permanent chosen state the page already shows via the floor
+flag. Counting either would redden every hourly run forever, and a gate that is
+always red is a gate nobody reads.
 
 **Bounding the run.** Every request has a deadline, but a deadline cannot bound
 a wedged runner or a hung install, so every job declares `timeout-minutes`. The
