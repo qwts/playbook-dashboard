@@ -4,11 +4,12 @@ compatibility_date = "2026-07-01"
 workers_dev = false
 
 # The Worker sits in front of the GitHub Pages origin for the dashboard host.
-# DNS for dashboard.dev.zts1.com must be a Cloudflare-proxied record pointing at
+# DNS for dashboard.qwts.org must be a Cloudflare-proxied record pointing at
 # GitHub Pages; the Worker then gates /data/* before the origin is reached.
+# One level of subdomain keeps the host inside free Universal SSL coverage.
 [[routes]]
-pattern = "dashboard.dev.zts1.com/*"
-zone_name = "zts1.com"
+pattern = "dashboard.qwts.org/*"
+zone_name = "qwts.org"
 
 [vars]
 # Empty = pass through to the zone origin (correct for CF-proxied GitHub Pages).

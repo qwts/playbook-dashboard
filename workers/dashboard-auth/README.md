@@ -1,6 +1,6 @@
 # dashboard-auth Worker
 
-Edge auth gate for `dashboard.dev.zts1.com`. Apple, Google, and GitHub are all
+Edge auth gate for `dashboard.qwts.org`. Apple, Google, and GitHub are all
 accepted identity providers. This Worker is the only component that holds IdP
 secrets — the SPA and its service worker never do.
 

@@ -79,7 +79,7 @@ out of the bundle.
 
 ## Authentication
 
-`dashboard.dev.zts1.com` sits behind the Cloudflare Worker in
+`dashboard.qwts.org` sits behind the Cloudflare Worker in
 [`workers/dashboard-auth`](workers/dashboard-auth), which is the only component
 holding identity-provider secrets. It gates `/data/*` — the static shell stays
 public so the SPA can render its own sign-in screen.
@@ -100,18 +100,23 @@ collector publishes.
 
 1. **Apple Developer portal** — create a Services ID (the web `client_id`),
    enable Sign in with Apple, and register the return URL
-   `https://dashboard.dev.zts1.com/auth/callback`. Create a Sign in with Apple
-   key and download the `AuthKey_XXXXXXXX.p8`.
+   `https://dashboard.qwts.org/auth/callback`. Apple verifies the domain by
+   fetching `/.well-known/apple-developer-domain-association.txt`, so the site
+   must already be live at that host. Create a Sign in with Apple key and
+   download the `AuthKey_XXXXXXXX.p8`.
 2. **Google Cloud console** — create a project, configure the OAuth consent
    screen as **External** and publish it (an unpublished app only admits test
-   users), then create an **OAuth client ID** of type *Web application* with the
-   authorised redirect URI `https://dashboard.dev.zts1.com/auth/callback`.
+   users), verify `qwts.org` in Search Console and list it as an authorised
+   domain, then create an **OAuth client ID** of type *Web application* with the
+   authorised redirect URI `https://dashboard.qwts.org/auth/callback`.
 3. **GitHub OAuth App** — set the authorization callback URL to
-   `https://dashboard.dev.zts1.com/auth/callback`.
-4. **DNS** — move `dashboard.dev.zts1.com` from the Route 53 `CNAME` to a
-   Cloudflare-proxied record targeting GitHub Pages, then attach the Worker
-   route `dashboard.dev.zts1.com/*`. Keep `public/CNAME` as-is so Pages still
-   serves the custom domain.
+   `https://dashboard.qwts.org/auth/callback`.
+4. **DNS** — in the Cloudflare `qwts.org` zone, add `dashboard` as a `CNAME` to
+   `qwts.github.io`, **DNS-only** at first so GitHub Pages can complete HTTP-01
+   validation and issue its certificate. Once *Enforce HTTPS* is available,
+   switch the record to **Proxied** to attach the Worker route
+   `dashboard.qwts.org/*`. Proxying before the Pages certificate exists returns
+   `526` under SSL/TLS mode Full (strict).
 5. **Worker secrets** — `SESSION_SECRET`, `GITHUB_CLIENT_ID`,
    `GITHUB_CLIENT_SECRET`, `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`,
    `APPLE_PRIVATE_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` via
@@ -136,7 +141,7 @@ over emitting privileged detail.
 ## Deploy
 
 GitHub Actions builds the site and deploys to GitHub Pages at
-`https://dashboard.dev.zts1.com/`. The auth Worker deploys separately from
+`https://dashboard.qwts.org/`. The auth Worker deploys separately from
 `.github/workflows/worker.yml` whenever `workers/` changes on `main`, using the
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. The deploy step is
 gated on the ref rather than the event, so a `workflow_dispatch` run cannot
