@@ -1,0 +1,22 @@
+{
+  "name": "playbook-dashboard-auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Edge auth gate for the playbook dashboard — Apple, Google, and GitHub sign-in",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "ci": "npm run typecheck"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.20.0"
+  }
+}

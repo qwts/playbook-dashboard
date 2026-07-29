@@ -5,6 +5,8 @@ dist/
 .env
 .env.*
 !.env.example
+.dev.vars
+.wrangler/
 *.local
 .vite/
 coverage/

@@ -18,15 +18,26 @@ inherit by default, vary by explicit delta).
 
 ## What is specific to this repository
 
-**Product.** Public, redacted fleet dashboard for governed `qwts` repos. It
-visualizes security *counts*, manifest properties, and CI conclusions. It must
-never publish alert titles, file paths, CVEs, secret material, or private
-vulnerability report bodies.
+**Product.** Redacted fleet dashboard for governed `qwts` repos, readable by any
+signed-in account. It visualizes security *counts*, manifest properties,
+and CI conclusions. It must never publish alert titles, file paths, CVEs, secret
+material, or private vulnerability report bodies. Authentication narrows the
+audience; it never widens what may be published.
 
 **Stack.** Vite + React + TypeScript. `npm run dev` serves local HTTPS;
-`npm run build` produces the Pages artifact; `npm run collect` rebuilds
-`public/data/snapshot.json` from GitHub APIs; `npm run ci` is typecheck + test +
-build, and is required before every push.
+`npm run build` produces the Pages artifact (terser-minified, mangled, no source
+maps); `npm run collect` rebuilds `public/data/snapshot.json` from GitHub APIs;
+`npm run ci` is typecheck + test + build, and is required before every push.
+
+**Auth.** `workers/dashboard-auth` is a Cloudflare Worker in front of the Pages
+origin: Apple, Google, and GitHub sign-in, HMAC-signed session cookie. Sign-up is
+open — no allowlist, no RBAC, every session is read-only and sees the same
+snapshot. It is the only place IdP secrets may live and the only enforcement
+point — it returns `401` for `/data/*` without a session. `public/sw.js` handles
+the OAuth return trip and credentialed snapshot fetches, and is assumed
+bypassable. The static shell is intentionally public so the SPA can render its
+own sign-in screen. `npm run dev` defaults to `VITE_AUTH_DISABLED=1`; never make
+that the production default.
 
 **Local TLS.** Certs live under `~/.quorum/certs` (CN `local.dev.zts1.com`).
 The encrypted key passphrase is loaded only through the environment variable

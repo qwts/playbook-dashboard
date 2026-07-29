@@ -2,9 +2,10 @@
 
 ## Goal
 
-A single public pane of glass for the playbook-engineering governed fleet:
-security posture (counts), repository properties, and CI status. Hosted on
-GitHub Pages. No authentication on day 1 — privacy is enforced by redaction.
+A single pane of glass for the playbook-engineering governed fleet: security
+posture (counts), repository properties, and CI status. Hosted on GitHub Pages
+behind a Cloudflare Worker. Privacy is enforced by two independent layers —
+redaction in the snapshot, and an authenticated session in front of it.
 
 ## Data flow
 
@@ -14,6 +15,27 @@ GitHub Pages. No authentication on day 1 — privacy is enforced by redaction.
 3. It writes `public/data/snapshot.json` containing only aggregates and booleans,
    and only for repositories cleared for publication (see below).
 4. The Vite SPA renders that file; the browser never holds a privileged token.
+
+## Access control
+
+Apple, Google, and GitHub are accepted identity providers. There is no allowlist
+and no RBAC — any account that completes a sign-in gets a read-only session, and
+every session sees the same snapshot.
+
+| Layer | Responsibility |
+| --- | --- |
+| `workers/dashboard-auth` | Holds all IdP secrets, mints the session cookie, and returns `401` for `/data/*` without one. Sole enforcement point. |
+| `public/sw.js` | Completes the OAuth return trip, keeps snapshot fetches credentialed, and signals the SPA when a session lapses. UX only, assumed bypassable. |
+| `src/App.tsx` | Renders the sign-in composition or the dashboard based on `/auth/me`. |
+
+The static shell stays public so the SPA can render its own sign-in screen. The
+redacted snapshot under `/data/` is what requires a session.
+
+Flow is authorization code with PKCE. Google enforces the binding itself; Apple
+and GitHub OAuth Apps do not, so the Worker verifies `code_challenge` against
+`code_verifier` for every provider. Redaction rules below still apply in full —
+and carry more weight now that sign-up is open: authentication narrows the
+audience, it does not widen what may be published.
 
 ## Redaction rules
 
@@ -394,3 +416,5 @@ cannot read — 207 KB across 14 files:
 - Listen bind: `127.0.0.1`
 - Port **8443** (documented; not 443)
 - TLS material from `~/.quorum/certs`, passphrase via `DASHBOARD_TLS_KEY_PASSPHRASE`
+- Auth is bypassed by default (`VITE_AUTH_DISABLED=1`); the `/auth/*` endpoints
+  live in the Worker, not in Vite

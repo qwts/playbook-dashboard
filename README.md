@@ -1,6 +1,6 @@
 # playbook-dashboard
 
-Public, redacted fleet dashboard for repositories governed by
+Redacted fleet dashboard for repositories governed by
 [playbook-engineering](https://github.com/qwts/playbook-engineering).
 
 It shows:
@@ -10,6 +10,9 @@ It shows:
 - **CI / CD** — latest default-branch workflow conclusion
 
 Alert bodies, file paths, CVEs, and secret material are never published.
+
+Viewing requires a sign-in — Apple, Google, or GitHub. Any account works; there
+are no roles or per-account permissions. See [Authentication](#authentication).
 
 ## Local development
 
@@ -42,6 +45,17 @@ npm run dev
 # open https://local.dev.zts1.com:8443/
 ```
 
+`npm run dev` sets `VITE_AUTH_DISABLED=1`, because the `/auth/*` endpoints live
+in the Cloudflare Worker rather than in Vite. To exercise the real sign-in flow
+locally, run the Worker in front of the dev server:
+
+```bash
+cd workers/dashboard-auth && npm install
+PAGES_ORIGIN=https://local.dev.zts1.com:8443 npm run dev
+# in the other shell
+VITE_AUTH_DISABLED=0 npm run dev
+```
+
 Optional overrides (see `.env.example`):
 
 - `DASHBOARD_DEV_PORT` — default `8443`
@@ -52,9 +66,9 @@ Optional overrides (see `.env.example`):
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | HTTPS Vite dev server on port **8443** |
+| `npm run dev` | HTTPS Vite dev server on port **8443** (auth bypassed) |
 | `npm test` | `node --test` over `src/**/*.test.ts` |
-| `npm run build` | Production static build to `dist/` |
+| `npm run build` | Production static build to `dist/` (terser-minified, no source maps) |
 | `npm run collect` | Refresh `public/data/snapshot.json` (needs `GITHUB_TOKEN`) |
 | `npm run ci` | Typecheck + test + build |
 
@@ -62,6 +76,52 @@ Node 24+ is required: tests are TypeScript and run through Node's built-in type
 stripping, with no build step. Browser code and test code are typechecked as
 separate projects (`tsconfig.json`, `tsconfig.test.json`) so Node globals stay
 out of the bundle.
+
+## Authentication
+
+`dashboard.dev.zts1.com` sits behind the Cloudflare Worker in
+[`workers/dashboard-auth`](workers/dashboard-auth), which is the only component
+holding identity-provider secrets. It gates `/data/*` — the static shell stays
+public so the SPA can render its own sign-in screen.
+
+```
+browser → Cloudflare Worker (session gate) → GitHub Pages origin
+```
+
+[`public/sw.js`](public/sw.js) completes the OAuth return trip and keeps
+snapshot fetches credentialed. It is convenience only; the Worker is the
+enforcement point.
+
+Authentication gates *who reaches the snapshot*, not *what it contains*. Because
+any account can sign in, the redaction contract still governs every field the
+collector publishes.
+
+### One-time setup
+
+1. **Apple Developer portal** — create a Services ID (the web `client_id`),
+   enable Sign in with Apple, and register the return URL
+   `https://dashboard.dev.zts1.com/auth/callback`. Create a Sign in with Apple
+   key and download the `AuthKey_XXXXXXXX.p8`.
+2. **Google Cloud console** — create a project, configure the OAuth consent
+   screen as **External** and publish it (an unpublished app only admits test
+   users), then create an **OAuth client ID** of type *Web application* with the
+   authorised redirect URI `https://dashboard.dev.zts1.com/auth/callback`.
+3. **GitHub OAuth App** — set the authorization callback URL to
+   `https://dashboard.dev.zts1.com/auth/callback`.
+4. **DNS** — move `dashboard.dev.zts1.com` from the Route 53 `CNAME` to a
+   Cloudflare-proxied record targeting GitHub Pages, then attach the Worker
+   route `dashboard.dev.zts1.com/*`. Keep `public/CNAME` as-is so Pages still
+   serves the custom domain.
+5. **Worker secrets** — `SESSION_SECRET`, `GITHUB_CLIENT_ID`,
+   `GITHUB_CLIENT_SECRET`, `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`,
+   `APPLE_PRIVATE_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` via
+   `wrangler secret put`. CI never sees them.
+6. **Actions secrets** — `CLOUDFLARE_API_TOKEN` (account-scoped, *Workers
+   Scripts: Edit*) and `CLOUDFLARE_ACCOUNT_ID`, so
+   `.github/workflows/worker.yml` can deploy.
+
+Any provider whose secrets are unset returns `provider_not_configured`; the
+others keep working.
 
 ## Snapshot collection
 
@@ -76,7 +136,10 @@ over emitting privileged detail.
 ## Deploy
 
 GitHub Actions builds the site and deploys to GitHub Pages at
-`https://dashboard.dev.zts1.com/`.
+`https://dashboard.dev.zts1.com/`. The auth Worker deploys separately from
+`.github/workflows/worker.yml` whenever `workers/` changes, using the
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. Identity-provider
+secrets live only in Cloudflare, never in the Pages build environment.
 
 The hostname is a Route 53 `CNAME` to `qwts.github.io`, and `public/CNAME`
 carries it into every Pages artifact. GitHub Pages issues and renews the
