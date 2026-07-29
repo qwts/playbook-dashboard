@@ -16,6 +16,7 @@ import {
   isRateLimited,
   retryDelayMs,
   countOpenAlerts,
+  publicationTally,
   degradedReasons,
   reportDegradation,
   collectionHealth,
@@ -791,4 +792,73 @@ test('a reason cannot forge a second output line', () => {
 test('outside Actions it writes nothing at all', () => {
   assert.doesNotThrow(() => reportDegradation(['1 denied'], undefined));
   assert.doesNotThrow(() => reportDegradation(['1 denied'], ''));
+});
+
+// --- a failed gate is not a decision (#12, finding 3) ---------------------
+
+test('a gate that could not be evaluated is unreadable, not withheld', () => {
+  // Nine governed, all opted in, one lookup rate-limited. The repo publishes no
+  // row either way — but it was not a choice, and `withheld` claims it was.
+  const tally = publicationTally({ governed: 9, candidates: 9, published: 8, unreadable: 1 });
+
+  assert.equal(tally.unreadable, 1);
+  assert.equal(tally.withheld, 0, 'nothing here was deliberately withheld');
+});
+
+test('the two kinds of withholding are counted separately', () => {
+  const tally = publicationTally({ governed: 9, candidates: 6, published: 4, unreadable: 1 });
+
+  assert.equal(tally.notOptedIn, 3, 'governed but no publish: true');
+  assert.equal(tally.notObservedPublic, 1, 'opted in, observed non-public');
+  assert.equal(tally.withheld, 4, 'both are decisions');
+  assert.equal(tally.unreadable, 1, 'this one is a failure');
+});
+
+test('every governed repo lands in exactly one bucket', () => {
+  for (let governed = 0; governed <= 6; governed += 1) {
+    for (let candidates = 0; candidates <= governed; candidates += 1) {
+      for (let unreadable = 0; unreadable <= candidates; unreadable += 1) {
+        for (let published = 0; published <= candidates - unreadable; published += 1) {
+          const t = publicationTally({ governed, candidates, published, unreadable });
+          assert.equal(
+            published + t.withheld + t.unreadable,
+            governed,
+            `${published}+${t.withheld}+${t.unreadable} != ${governed}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// Publishing a denominator we cannot derive would state something untrue about
+// the fleet, so an impossible tally is fatal rather than rounded into shape.
+test('a tally that cannot add up refuses to produce a number', () => {
+  const impossible = [
+    { governed: 5, candidates: 6, published: 0, unreadable: 0 },
+    { governed: 5, candidates: 5, published: 4, unreadable: 2 },
+    { governed: 5, candidates: 5, published: 6, unreadable: 0 },
+    { governed: -1, candidates: 0, published: 0, unreadable: 0 },
+    { governed: 5, candidates: 5, published: 1.5, unreadable: 0 },
+    { governed: 5, candidates: 5, published: Number.NaN, unreadable: 0 },
+  ];
+
+  for (const input of impossible) {
+    assert.throws(
+      () => publicationTally(input),
+      /does not add up/u,
+      `${JSON.stringify(input)} should not yield a count`,
+    );
+  }
+});
+
+test('the tally reaches the snapshot as two fields, never one', () => {
+  const main = SOURCE.slice(SOURCE.indexOf('async function main()'));
+  assert.match(main, /^\s*withheld,$/mu, 'withheld is published');
+  assert.match(main, /^\s*unreadable,$/mu, 'unreadable is published alongside it');
+  assert.doesNotMatch(
+    main,
+    /withheld:\s*withheld\s*\+\s*unreadable/u,
+    'summing them restores the conflation this split exists to undo',
+  );
 });

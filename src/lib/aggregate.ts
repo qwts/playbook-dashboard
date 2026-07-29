@@ -20,7 +20,23 @@ export function visibleRepos(snapshot: Snapshot): RepoSnapshot[] {
  * the snapshot does not state it. Null renders as unknown, never as zero.
  */
 export function withheldCount(snapshot: Snapshot): number | null {
-  const value: unknown = snapshot.withheld;
+  return nonNegativeInteger(snapshot.withheld);
+}
+
+/**
+ * Count of governed repos whose publication gate could not be evaluated, or
+ * `null` when the snapshot does not state it.
+ *
+ * Never added to `withheldCount`. A reader deciding whether the fleet is under
+ * control needs "we chose not to publish these" and "we could not tell" kept
+ * apart; summing them restores the conflation this field exists to undo.
+ */
+export function unreadableCount(snapshot: Snapshot): number | null {
+  return nonNegativeInteger(snapshot.unreadable);
+}
+
+/** The snapshot is untrusted input: anything that is not a sane count is unknown. */
+function nonNegativeInteger(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
   return value;
 }

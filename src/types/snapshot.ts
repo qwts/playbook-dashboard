@@ -19,6 +19,20 @@ export type Snapshot = {
    */
   withheld: number | null;
   /**
+   * Governed repos whose publication gate could not be evaluated at all — the
+   * lookup was denied, rate-limited, or timed out. A count only, never which.
+   *
+   * Separate from `withheld` because they are different claims. `withheld` says
+   * the collector *decided* not to publish, which is a statement about a fleet
+   * under deliberate control. This says it could not tell, which is transient
+   * and will likely resolve next run. Folding the second into the first makes a
+   * rate limit read as curation — the same defect as a denied count rendering
+   * as a green zero, one level up.
+   *
+   * `null` when the snapshot cannot state it, for the same reason as `withheld`.
+   */
+  unreadable: number | null;
+  /**
    * Why reads were missing, in aggregate — never which repo.
    *
    * A `null` count means the collector could not read it, but not why. Denied
