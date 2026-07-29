@@ -20,7 +20,41 @@ export function visibleRepos(snapshot: Snapshot): RepoSnapshot[] {
  * the snapshot does not state it. Null renders as unknown, never as zero.
  */
 export function withheldCount(snapshot: Snapshot): number | null {
-  const value: unknown = snapshot.withheld;
+  return nonNegativeInteger(snapshot.withheld);
+}
+
+/**
+ * Count of governed repos whose publication gate could not be evaluated, or
+ * `null` when the snapshot does not state it.
+ *
+ * Never added to `withheldCount`. A reader deciding whether the fleet is under
+ * control needs "we chose not to publish these" and "we could not tell" kept
+ * apart; summing them restores the conflation this field exists to undo.
+ */
+export function unreadableCount(snapshot: Snapshot): number | null {
+  return nonNegativeInteger(snapshot.unreadable);
+}
+
+/**
+ * The denominator for "published X of Y governed", or `null` when either
+ * stated count is unknown.
+ *
+ * Built on every row the snapshot carries, not the rows `visibleRepos` lets
+ * through. The frontend filter is a backstop against a snapshot that should
+ * never have shipped, and a backstop that fires must leave evidence: counting
+ * only visible rows would shrink numerator and denominator in step, so a
+ * dropped row vanishes instead of reading as "published 7 of 9". The gap is
+ * the signal.
+ */
+export function governedCount(snapshot: Snapshot): number | null {
+  const withheld = withheldCount(snapshot);
+  const unreadable = unreadableCount(snapshot);
+  if (withheld === null || unreadable === null) return null;
+  return snapshot.repos.length + withheld + unreadable;
+}
+
+/** The snapshot is untrusted input: anything that is not a sane count is unknown. */
+function nonNegativeInteger(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
   return value;
 }

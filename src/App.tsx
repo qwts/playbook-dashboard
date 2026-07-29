@@ -7,12 +7,14 @@ import {
   countCiFailing,
   countMissingCi,
   formatRelative,
+  governedCount,
   isSnapshotStale,
   openSecurityLabel,
   sumOpenSecurity,
   toneForCount,
   toneForOpenSecurity,
   visibleRepos,
+  unreadableCount,
   withheldCount,
 } from './lib/aggregate';
 import type { Tone } from './lib/aggregate';
@@ -125,7 +127,12 @@ export function App() {
   const failing = countCiFailing(repos);
   const missingCi = countMissingCi(repos);
   const withheld = withheldCount(state.snapshot);
-  const governed = withheld === null ? null : repos.length + withheld;
+  const unreadable = unreadableCount(state.snapshot);
+  // Derived from the unfiltered snapshot, not from `repos`: a row the frontend
+  // backstop drops must widen the gap between published and governed, not
+  // shrink both sides in step and vanish. `withheld` and `unreadable` stay
+  // separate pills — the denominator needs both, the reader needs them apart.
+  const governed = governedCount(state.snapshot);
 
   return (
     <div className="app">
@@ -145,11 +152,12 @@ export function App() {
           </span>
           <span
             className="pill"
-            data-tone={governed === null || withheld ? 'warn' : 'ok'}
-            title="Governed repos are those the manifest lists as not retired. Withheld repos publish no name, counts, or posture."
+            data-tone={governed === null || unreadable ? 'warn' : withheld ? 'warn' : 'ok'}
+            title="Governed repos are those the manifest lists as not retired. Withheld repos were deliberately not published and publish no name, counts, or posture. Unreadable repos are ones whose gate lookup failed — denied, rate-limited, timed out, or a 404 for a repo deleted or renamed since the manifest was written. A failure, not a decision."
           >
             published {repos.length} of {governed ?? '?'} governed
             {withheld ? ` · ${withheld} withheld` : ''}
+            {unreadable ? ` · ${unreadable} unreadable` : ''}
             {governed === null ? ' · count unknown' : ''}
           </span>
           <span className="pill">

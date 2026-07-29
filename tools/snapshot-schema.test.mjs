@@ -1,0 +1,335 @@
+import assert from 'node:assert/strict';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { CAPS, STALE_MS, validateSnapshot } from './snapshot-schema.mjs';
+import { main as validateMain } from './validate-snapshot.mjs';
+
+const FIXTURE = JSON.parse(
+  readFileSync(new URL('../public/data/snapshot.json', import.meta.url), 'utf8'),
+);
+
+/** A structurally perfect snapshot, generated now. Every test starts here. */
+function valid(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    source: {
+      account: 'qwts',
+      manifestRepo: 'qwts/playbook-engineering',
+      manifestPath: 'governance/repos.json',
+    },
+    withheld: 0,
+    unreadable: 0,
+    collection: { denied: 0, rateLimited: 0, failed: 0 },
+    repos: [repo()],
+    ...overrides,
+  };
+}
+
+function repo(overrides = {}) {
+  return {
+    name: 'example',
+    visibility: 'public',
+    status: 'active',
+    sharedCi: false,
+    codexSyncEnabled: null,
+    delta: '',
+    htmlUrl: 'https://github.com/qwts/example',
+    securityFloor: {
+      secretScanning: true,
+      pushProtection: true,
+      dependabotAlerts: true,
+      privateVulnerabilityReporting: true,
+      codeqlConfigured: false,
+      defaultBranchRuleset: true,
+    },
+    security: { dependabotOpen: 0, codeScanningOpen: 1, secretScanningOpen: 0 },
+    ci: {
+      workflowName: 'CI',
+      conclusion: 'success',
+      status: 'completed',
+      updatedAt: new Date().toISOString(),
+      htmlUrl: 'https://github.com/qwts/example/actions',
+    },
+    ...overrides,
+  };
+}
+
+test('a snapshot that upholds the contract passes', () => {
+  assert.deepEqual(validateSnapshot(valid()), []);
+});
+
+// The assertion the whole file exists for. Checking that known fields are
+// well-formed catches malformed data; only a closed key set catches *new* data,
+// and new data is how a leak arrives — a field added to a collector return value
+// used to publish itself on the next hourly cron with nobody in the loop.
+test('a field nobody decided to publish is rejected, at every level', () => {
+  const cases = [
+    [valid({ alertTitles: ['RCE in parser'] }), 'snapshot.alertTitles'],
+    [valid({ source: { ...valid().source, token: 'ghp_x' } }), 'snapshot.source.token'],
+    [valid({ repos: [repo({ note: 'internal only' })] }), 'snapshot.repos[0].note'],
+    [
+      valid({ repos: [repo({ security: { ...repo().security, cves: ['CVE-2031-1'] } })] }),
+      'snapshot.repos[0].security.cves',
+    ],
+    [
+      valid({ repos: [repo({ ci: { ...repo().ci, logUrl: 'https://github.com/x' } })] }),
+      'snapshot.repos[0].ci.logUrl',
+    ],
+    [
+      valid({ repos: [repo({ securityFloor: { ...repo().securityFloor, extra: true } })] }),
+      'snapshot.repos[0].securityFloor.extra',
+    ],
+    [valid({ collection: { denied: 0, rateLimited: 0, failed: 0, paths: [] } }), 'snapshot.collection.paths'],
+  ];
+
+  for (const [snapshot, expected] of cases) {
+    const violations = validateSnapshot(snapshot);
+    assert.ok(
+      violations.some((v) => v.startsWith(`${expected} is not in the published schema`)),
+      `${expected} should have been rejected, got: ${JSON.stringify(violations)}`,
+    );
+  }
+});
+
+// `in` walks the prototype chain, so before Object.hasOwn a field named after
+// an Object.prototype member — an ordinary own key once JSON.parse has run —
+// matched the inherited property, passed the closed-key-set check, and shipped
+// with its value never validated. Prototype-named keys are exactly the ones an
+// attacker reaches for.
+test('a key named after an Object.prototype member is rejected, not inherited past', () => {
+  // Injected via JSON, as the real artifact would carry it: an object literal
+  // with a `__proto__` key sets the prototype instead of creating an own key.
+  const inject = (json, key) => `${json.slice(0, -1)},${JSON.stringify(key)}:true}`;
+
+  for (const key of ['toString', 'valueOf', 'constructor', '__proto__', 'hasOwnProperty']) {
+    const top = JSON.parse(inject(JSON.stringify(valid()), key));
+    assert.ok(
+      validateSnapshot(top).some((v) => v.startsWith(`snapshot.${key} is not in the published schema`)),
+      `top-level ${key} should have been rejected`,
+    );
+
+    const nested = valid();
+    nested.repos = [JSON.parse(inject(JSON.stringify(repo()), key))];
+    assert.ok(
+      validateSnapshot(nested).some((v) =>
+        v.startsWith(`snapshot.repos[0].${key} is not in the published schema`),
+      ),
+      `repo-level ${key} should have been rejected`,
+    );
+  }
+});
+
+test('a missing field is a violation too, not a silently absent one', () => {
+  const { withheld, ...withoutWithheld } = valid();
+  assert.ok(validateSnapshot(withoutWithheld).includes('snapshot.withheld is missing'));
+
+  const { security, ...bare } = repo();
+  const violations = validateSnapshot(valid({ repos: [bare] }));
+  assert.ok(violations.includes('snapshot.repos[0].security is missing'));
+});
+
+test('the schema version has to be the one this code understands', () => {
+  for (const version of [0, 2, '1', null, undefined, 1.0000001]) {
+    const violations = validateSnapshot(valid({ schemaVersion: version }));
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.schemaVersion')),
+      `schemaVersion ${JSON.stringify(version)} should be rejected`,
+    );
+  }
+});
+
+test('a count is null or a non-negative integer, and nothing else', () => {
+  for (const bad of ['3', -1, 1.5, Number.NaN, Infinity, {}, [], true, undefined]) {
+    const violations = validateSnapshot(
+      valid({ repos: [repo({ security: { ...repo().security, dependabotOpen: bad } })] }),
+    );
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.repos[0].security.dependabotOpen')),
+      `${JSON.stringify(bad)} should not be publishable as a count`,
+    );
+  }
+
+  // null is the whole point of the type: unreadable, not zero.
+  assert.deepEqual(
+    validateSnapshot(valid({ repos: [repo({ security: { ...repo().security, dependabotOpen: null } })] })),
+    [],
+  );
+});
+
+test('a URL is checked by the collector, not by a second copy of the rule', () => {
+  const hostile = [
+    'javascript:alert(1)',
+    'http://github.com/qwts/x',
+    'https://github.com.evil.example/qwts/x',
+    'https://user:pass@github.com/qwts/x',
+    'https://raw.githubusercontent.com/qwts/x',
+  ];
+
+  for (const value of hostile) {
+    const violations = validateSnapshot(valid({ repos: [repo({ htmlUrl: value })] }));
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.repos[0].htmlUrl')),
+      `${value} should not survive validation`,
+    );
+  }
+});
+
+test('free text is capped and control characters are refused', () => {
+  const overLong = validateSnapshot(valid({ repos: [repo({ delta: 'x'.repeat(CAPS.delta + 1) })] }));
+  assert.ok(overLong.some((v) => v.includes('exceeds the')));
+
+  assert.deepEqual(validateSnapshot(valid({ repos: [repo({ delta: 'x'.repeat(CAPS.delta) })] })), []);
+
+  for (const char of ['\u0000', '\u001b', '\u007f', '\n', '\r']) {
+    const violations = validateSnapshot(valid({ repos: [repo({ delta: `ok${char}bad` })] }));
+    assert.ok(
+      violations.some((v) => v.includes('control characters')),
+      `${JSON.stringify(char)} should not reach the page`,
+    );
+  }
+});
+
+test('only a repo observed public may be in the artifact at all', () => {
+  for (const visibility of ['private', 'internal', 'PUBLIC', 'public ', '', null]) {
+    const violations = validateSnapshot(valid({ repos: [repo({ visibility })] }));
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.repos[0].visibility')),
+      `visibility ${JSON.stringify(visibility)} must not be publishable`,
+    );
+  }
+});
+
+test('a timestamp in the future is refused however fresh it looks', () => {
+  const now = Date.now();
+  const violations = validateSnapshot(
+    valid({ generatedAt: new Date(now + 60 * 60 * 1000).toISOString() }),
+    { now },
+  );
+  // A future timestamp makes a stale artifact read as current for as long as
+  // the skew lasts — the one direction that suppresses the staleness warning.
+  assert.ok(violations.includes('snapshot.generatedAt is in the future'));
+  assert.equal(
+    violations.filter((v) => v.startsWith('snapshot.generatedAt')).length,
+    1,
+    'one violation per field — the shape walk and the freshness block must not both report it',
+  );
+});
+
+// DESIGN.md says timestamps, plural. `generatedAt` was the only one checked;
+// a future `ci.updatedAt` passed and read as maximally current CI — the same
+// suppression, one field down.
+test('every timestamp field refuses the future, not just generatedAt', () => {
+  const now = Date.now();
+  const future = new Date(now + 60 * 60 * 1000).toISOString();
+  const violations = validateSnapshot(
+    valid({ repos: [repo({ ci: { ...repo().ci, updatedAt: future } })] }),
+    { now },
+  );
+  assert.ok(violations.includes('snapshot.repos[0].ci.updatedAt is in the future'));
+
+  // Inside the skew allowance is not "the future" — clocks drift.
+  const nearby = new Date(now + 30_000).toISOString();
+  assert.deepEqual(
+    validateSnapshot(valid({ repos: [repo({ ci: { ...repo().ci, updatedAt: nearby } })] }), { now }),
+    [],
+  );
+});
+
+test('an unparseable timestamp never passes', () => {
+  for (const value of ['not a date', '', 42, null, undefined]) {
+    const violations = validateSnapshot(valid({ generatedAt: value }));
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.generatedAt')),
+      `generatedAt ${JSON.stringify(value)} should be rejected`,
+    );
+  }
+});
+
+// Staleness is a property of a run, not of the contract. The committed fixture
+// is deliberately old — being the fallback is its job — so only a run that
+// actually collected may demand freshness.
+test('staleness is only enforced when a run claims to have just collected', () => {
+  const now = Date.now();
+  const old = valid({ generatedAt: new Date(now - STALE_MS - 1000).toISOString() });
+
+  assert.deepEqual(validateSnapshot(old, { now }), [], 'structure alone must still pass');
+  assert.ok(
+    validateSnapshot(old, { now, requireFresh: true }).includes(
+      'snapshot.generatedAt is older than the staleness threshold',
+    ),
+  );
+});
+
+test('two rows for the same repo are refused', () => {
+  const violations = validateSnapshot(valid({ repos: [repo(), repo()] }));
+  assert.ok(violations.includes('snapshot.repos contains duplicate names'));
+});
+
+test('every violation is reported, not just the first', () => {
+  const violations = validateSnapshot(
+    valid({ schemaVersion: 9, leaked: true, repos: [repo({ visibility: 'private', extra: 1 })] }),
+  );
+  assert.ok(violations.length >= 4, `expected several violations, got ${violations.length}`);
+});
+
+// A violation message names the field and the reason. It must never quote the
+// value: the thing that failed validation is exactly the thing not to put into
+// a log that is public on this repository.
+test('no violation message quotes the offending value', () => {
+  const secret = 'ghp_livetokenmarker9271';
+  const violations = validateSnapshot(
+    valid({
+      repos: [repo({ delta: `${secret}${'x'.repeat(CAPS.delta)}`, htmlUrl: `https://evil.example/${secret}` })],
+      source: { account: secret.repeat(4), manifestRepo: 'a', manifestPath: 'b' },
+    }),
+  );
+
+  assert.ok(violations.length >= 3, 'expected the violations that carry values');
+  for (const violation of violations) {
+    assert.doesNotMatch(violation, /livetokenmarker9271/u, `a value reached a message: ${violation}`);
+  }
+});
+
+// The same rule one layer down: a snapshot that is not even JSON. V8's
+// SyntaxError message embeds a snippet of the input, so printing
+// `error.message` republishes the bytes the gate exists to keep out of a
+// public log.
+test('a parse failure never echoes the file contents either', () => {
+  const secret = 'ghp_livetokenmarker9271';
+  const file = join(tmpdir(), `bad-snapshot-${process.pid}.json`);
+  // Invalid JSON, with the marker at the point the parser will complain about.
+  writeFileSync(file, `{"generatedAt": ${secret}}`);
+
+  const written = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  try {
+    assert.equal(validateMain([file]), 1, 'an unparseable snapshot must refuse to publish');
+  } finally {
+    process.stderr.write = realWrite;
+    rmSync(file, { force: true });
+  }
+
+  const output = written.join('');
+  assert.doesNotMatch(output, /livetokenmarker9271/u, `file contents reached stderr: ${output}`);
+  assert.match(output, /could not be read as JSON/u, 'the fixed complaint must still explain itself');
+});
+
+test('the committed fallback fixture upholds the contract it will be published under', () => {
+  // It is deployed verbatim whenever collection fails, so it is a published
+  // artifact in its own right and gets no exemption from the structural rules.
+  assert.deepEqual(validateSnapshot(FIXTURE), []);
+});
+
+test('a non-object, or a repos field that is not an array, fails closed', () => {
+  for (const bad of [null, undefined, 42, 'snapshot', []]) {
+    assert.ok(validateSnapshot(bad).length > 0, `${JSON.stringify(bad)} is not a snapshot`);
+  }
+  assert.ok(validateSnapshot(valid({ repos: {} })).includes('snapshot.repos must be an array'));
+});

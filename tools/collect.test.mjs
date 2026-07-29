@@ -3,10 +3,13 @@ import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { validateSnapshot } from './snapshot-schema.mjs';
 import {
   ALLOWED_URL_ORIGIN,
   MAX_BACKOFF_MS,
   MAX_DELTA_LENGTH,
+  MAX_WORKFLOW_NAME_LENGTH,
+  sanitizeWorkflowName,
   fetchRepoForGate,
   isObservedPublic,
   isPublishable,
@@ -15,7 +18,9 @@ import {
   sanitizeGithubUrl,
   isRateLimited,
   retryDelayMs,
+  collectRepo,
   countOpenAlerts,
+  publicationTally,
   degradedReasons,
   reportDegradation,
   loadManifest,
@@ -245,6 +250,35 @@ test('a missing or non-string delta becomes an empty string', () => {
   for (const value of [undefined, null, 42, {}, [], true]) {
     assert.equal(sanitizeDelta(value, 'example'), '');
   }
+});
+
+// The schema rejects an over-cap or control-charactered workflow name — but it
+// rejects the whole snapshot, fleet-wide. Sanitizing at collect time keeps one
+// repo's hostile workflow name from blocking every other repo's publication.
+test('a workflow name is truncated to the published cap, not shipped raw', () => {
+  const long = 'w'.repeat(MAX_WORKFLOW_NAME_LENGTH + 40);
+  assert.equal(sanitizeWorkflowName(long), 'w'.repeat(MAX_WORKFLOW_NAME_LENGTH));
+  assert.equal(sanitizeWorkflowName('CI'), 'CI');
+});
+
+test('control characters are stripped from a workflow name, not published', () => {
+  assert.equal(sanitizeWorkflowName('release\nnotes'), 'releasenotes');
+  assert.equal(sanitizeWorkflowName('esc\u001b[31mCI'), 'esc[31mCI');
+  assert.equal(sanitizeWorkflowName('\u0000\u007f'), null, 'nothing left is null, not an empty string');
+});
+
+test('a missing or non-string workflow name is null, matching the schema', () => {
+  for (const value of [undefined, null, 42, {}, [], true, '']) {
+    assert.equal(sanitizeWorkflowName(value), null);
+  }
+});
+
+test('fetchCi routes the run name through the sanitizer', () => {
+  // Source assertion for the wiring; the behaviour is tested above. An
+  // unsanitized `run.name` here is exactly the fleet-wide publication block.
+  const ci = SOURCE.slice(SOURCE.indexOf('async function fetchCi'), SOURCE.indexOf('export function parseCodexSync'));
+  assert.match(ci, /workflowName: sanitizeWorkflowName\(run\.name\)/u);
+  assert.doesNotMatch(ci, /workflowName: run\.name/u);
 });
 
 // A source assertion rather than a behavioural one: main() does network I/O, so
@@ -637,6 +671,26 @@ test('an unreadable posture field is degradation even when no counter moved', ()
   assert.deepEqual(reasons, ['1 posture fields unreadable']);
 });
 
+// The gate-failure paths the counters miss entirely. A deleted repo left in
+// the manifest with `publish: true` 404s at the gate: no health counter moves,
+// no row publishes, `unreadable` becomes 1 — and before this check the run
+// stayed green while the page reported a repo it could not evaluate.
+test('a repo unreadable at the gate reddens the run even with clean counters', () => {
+  const reasons = degradedReasons(snap({ unreadable: 1, repos: [healthyRepo()] }));
+  assert.deepEqual(reasons, ['1 repos unreadable at the gate']);
+});
+
+test('a malformed unreadable count from an untrusted snapshot is not degradation evidence', () => {
+  for (const bad of [null, undefined, -1, 1.5, Number.NaN, '2', {}, [], true]) {
+    assert.deepEqual(
+      degradedReasons(snap({ unreadable: bad, repos: [healthyRepo()] })),
+      [],
+      `unreadable ${JSON.stringify(bad)} is not a sane count`,
+    );
+  }
+  assert.deepEqual(degradedReasons(snap({ unreadable: 0, repos: [healthyRepo()] })), []);
+});
+
 test('an unreadable floor boolean counts the same as an unreadable count', () => {
   const reasons = degradedReasons(
     snap({ repos: [healthyRepo({ securityFloor: { ...healthyRepo().securityFloor, codeqlConfigured: null } })] }),
@@ -794,6 +848,64 @@ test('outside Actions it writes nothing at all', () => {
   assert.doesNotThrow(() => reportDegradation(['1 denied'], ''));
 });
 
+// --- a failed gate is not a decision (#12, finding 3) ---------------------
+
+test('a gate that could not be evaluated is unreadable, not withheld', () => {
+  // Nine governed, all opted in, one lookup rate-limited. The repo publishes no
+  // row either way — but it was not a choice, and `withheld` claims it was.
+  const tally = publicationTally({ governed: 9, candidates: 9, published: 8, unreadable: 1 });
+
+  assert.equal(tally.unreadable, 1);
+  assert.equal(tally.withheld, 0, 'nothing here was deliberately withheld');
+});
+
+test('the two kinds of withholding are counted separately', () => {
+  const tally = publicationTally({ governed: 9, candidates: 6, published: 4, unreadable: 1 });
+
+  assert.equal(tally.notOptedIn, 3, 'governed but no publish: true');
+  assert.equal(tally.notObservedPublic, 1, 'opted in, observed non-public');
+  assert.equal(tally.withheld, 4, 'both are decisions');
+  assert.equal(tally.unreadable, 1, 'this one is a failure');
+});
+
+test('every governed repo lands in exactly one bucket', () => {
+  for (let governed = 0; governed <= 6; governed += 1) {
+    for (let candidates = 0; candidates <= governed; candidates += 1) {
+      for (let unreadable = 0; unreadable <= candidates; unreadable += 1) {
+        for (let published = 0; published <= candidates - unreadable; published += 1) {
+          const t = publicationTally({ governed, candidates, published, unreadable });
+          assert.equal(
+            published + t.withheld + t.unreadable,
+            governed,
+            `${published}+${t.withheld}+${t.unreadable} != ${governed}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// Publishing a denominator we cannot derive would state something untrue about
+// the fleet, so an impossible tally is fatal rather than rounded into shape.
+test('a tally that cannot add up refuses to produce a number', () => {
+  const impossible = [
+    { governed: 5, candidates: 6, published: 0, unreadable: 0 },
+    { governed: 5, candidates: 5, published: 4, unreadable: 2 },
+    { governed: 5, candidates: 5, published: 6, unreadable: 0 },
+    { governed: -1, candidates: 0, published: 0, unreadable: 0 },
+    { governed: 5, candidates: 5, published: 1.5, unreadable: 0 },
+    { governed: 5, candidates: 5, published: Number.NaN, unreadable: 0 },
+  ];
+
+  for (const input of impossible) {
+    assert.throws(
+      () => publicationTally(input),
+      /does not add up/u,
+      `${JSON.stringify(input)} should not yield a count`,
+    );
+  }
+});
+
 // --- response bodies must not reach a public Actions log (#23) ------------
 //
 // `main().catch()` prints what is thrown, and Actions logs on a public
@@ -906,8 +1018,8 @@ test('a body is available for diagnosis only behind a flag CI never sets', async
   assert.doesNotMatch(workflow, /COLLECT_DEBUG/u, 'CI must never set the debug flag');
 });
 
-// The safety this issue calls positional-not-enforced. A comment is what the
-// pre-gate lookup already ignored once (#14), so pin it as a check.
+// The safety property this issue calls positional-not-enforced. A comment is
+// what the pre-gate lookup already ignored once (#14), so pin it as a check.
 test('both throwing definitions carry the pre-gate constraint', () => {
   for (const marker of ['async function ghJson', 'export async function countOpenAlerts']) {
     const at = SOURCE.indexOf(marker);
@@ -919,6 +1031,161 @@ test('both throwing definitions carry the pre-gate constraint', () => {
       `${marker} must state the constraint where the next caller will read it`,
     );
   }
+});
+
+test('the tally reaches the snapshot as two fields, never one', () => {
+  const main = SOURCE.slice(SOURCE.indexOf('async function main()'));
+  assert.match(main, /^\s*withheld,$/mu, 'withheld is published');
+  assert.match(main, /^\s*unreadable,$/mu, 'unreadable is published alongside it');
+  assert.doesNotMatch(
+    main,
+    /withheld:\s*withheld\s*\+\s*unreadable/u,
+    'summing them restores the conflation this split exists to undo',
+  );
+});
+
+// --- the collector's own output must satisfy the schema it publishes under --
+//
+// The validate step guards the artifact, but in PR CI the only artifact is the
+// committed fixture: nothing ran a *collector-produced* row through
+// `validateSnapshot`, so the exact vector #9 names — a field added to a
+// collector return value — passed PR CI green and was first caught by the
+// hourly cron as a fail-closed publish outage, post-merge. This round-trip
+// moves that discovery to PR time. It is also the test that would have caught
+// the unsanitized workflow name before it needed a review finding.
+
+function githubApiStub(overrides = {}) {
+  const detail = {
+    private: false,
+    visibility: 'public',
+    default_branch: 'main',
+    html_url: 'https://github.com/qwts/example',
+    security_and_analysis: {
+      secret_scanning: { status: 'enabled' },
+      secret_scanning_push_protection: { status: 'enabled' },
+      dependabot_security_updates: { status: 'enabled' },
+    },
+    ...overrides.detail,
+  };
+  const run = {
+    name: 'CI',
+    conclusion: 'success',
+    status: 'completed',
+    updated_at: new Date().toISOString(),
+    html_url: 'https://github.com/qwts/example/actions/runs/1',
+    ...overrides.run,
+  };
+
+  return async (url) => {
+    const path = String(url);
+    if (path.includes('/private-vulnerability-reporting')) {
+      return Response.json({ enabled: true });
+    }
+    if (path.includes('/code-scanning/default-setup')) {
+      return Response.json({ state: 'configured' });
+    }
+    if (path.includes('/rulesets')) {
+      return Response.json([{ enforcement: 'active' }]);
+    }
+    if (path.includes('/alerts?')) {
+      return Response.json([]);
+    }
+    if (path.includes('/actions/runs')) {
+      return Response.json({ workflow_runs: [run] });
+    }
+    // The gate lookup: /repos/{owner}/{name}
+    return Response.json(detail);
+  };
+}
+
+function envelope(row) {
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    source: {
+      account: 'qwts',
+      manifestRepo: 'qwts/playbook-engineering',
+      manifestPath: 'governance/repos.json',
+    },
+    withheld: 0,
+    unreadable: 0,
+    collection: { denied: 0, rateLimited: 0, failed: 0 },
+    repos: [row],
+  };
+}
+
+async function roundTrip(entry, overrides = {}) {
+  const row = await withStubbedFetch(githubApiStub(overrides), () => collectRepo(entry, []));
+  assert.ok(row, 'the gate should have passed — the stub reports a public repo');
+  return validateSnapshot(envelope(row));
+}
+
+test('a collected row satisfies the schema it will be published under', async () => {
+  const violations = await roundTrip({
+    name: 'example',
+    status: 'active',
+    sharedCi: true,
+    publish: true,
+    codexSync: { enabled: false },
+    delta: 'Version-consistency gate in CI.',
+  });
+
+  assert.deepEqual(violations, [], 'collector output failed its own publication contract');
+});
+
+test('a hostile API response still yields a publishable row, not a publish outage', async () => {
+  // Values GitHub could plausibly return that the schema must never see raw:
+  // an over-long workflow name, and URLs that resolve off-origin. The
+  // collector's job is to sanitize at entry; anything reaching the artifact
+  // unsanitized fails validation, which fails the run closed — correct for the
+  // artifact, and exactly why sanitizing has to happen here instead.
+  const violations = await roundTrip(
+    {
+      name: 'example',
+      status: 'onboarding',
+      sharedCi: false,
+      publish: true,
+      delta: '',
+    },
+    {
+      run: {
+        name: `deploy ${'x'.repeat(400)}`,
+        conclusion: null,
+        status: 'in_progress',
+        updated_at: new Date().toISOString(),
+        html_url: 'https://evil.example/qwts/example',
+      },
+      detail: { html_url: 'https://github.com.evil.example/qwts/example' },
+    },
+  );
+
+  assert.deepEqual(violations, [], 'sanitization must happen at collect time, not at validation');
+});
+
+test('a minimal repo — no CI, no scanners — still round-trips clean', async () => {
+  const bare = async (url) => {
+    const path = String(url);
+    if (path.includes('/actions/runs')) return Response.json({ workflow_runs: [] });
+    if (path.includes('/alerts?') || path.includes('/default-setup')) {
+      return new Response('{"message":"not found"}', { status: 404 });
+    }
+    if (path.includes('/private-vulnerability-reporting') || path.includes('/rulesets')) {
+      return new Response('{"message":"forbidden"}', { status: 403 });
+    }
+    return Response.json({
+      private: false,
+      visibility: 'public',
+      default_branch: 'main',
+      html_url: 'https://github.com/qwts/bare',
+    });
+  };
+
+  const row = await withStubbedFetch(bare, () =>
+    collectRepo({ name: 'bare', status: 'onboarding', publish: true }, []),
+  );
+  const violations = validateSnapshot(envelope(row));
+
+  assert.deepEqual(violations, [], 'nulls and unknowns are valid published values');
 });
 
 test('the pre-gate lookup is still the only thing that runs before the gate', () => {

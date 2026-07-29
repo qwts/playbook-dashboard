@@ -9,11 +9,13 @@ import {
   countCiFailing,
   countMissingCi,
   formatRelative,
+  governedCount,
   isSnapshotStale,
   openSecurityLabel,
   sumOpenSecurity,
   toneForOpenSecurity,
   visibleRepos,
+  unreadableCount,
   withheldCount,
 } from './aggregate.ts';
 
@@ -52,7 +54,7 @@ function counts(overrides: Partial<SecurityCounts> = {}): SecurityCounts {
   return { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0, ...overrides };
 }
 
-function snapshot(repos: RepoSnapshot[], withheld = 0): Snapshot {
+function snapshot(repos: RepoSnapshot[], withheld = 0, unreadable = 0): Snapshot {
   return {
     schemaVersion: 1,
     generatedAt: '2026-07-26T12:00:00.000Z',
@@ -62,6 +64,7 @@ function snapshot(repos: RepoSnapshot[], withheld = 0): Snapshot {
       manifestPath: 'governance/repos.json',
     },
     withheld,
+    unreadable,
     collection: { denied: 0, rateLimited: 0, failed: 0 },
     repos,
   };
@@ -281,5 +284,70 @@ test('CI labels name the state a reader has to act on', () => {
   assert.equal(
     ciLabel(repo({ ci: { ...NO_CI, workflowName: 'CI', conclusion: 'failure', status: 'completed' } })),
     'failure',
+  );
+});
+
+// #12, finding 3. Both produce no published row, which is why they were one
+// number — but "we chose not to publish these" and "we could not tell" are
+// opposite claims to anyone judging whether the fleet is under control. A rate
+// limit used to make the fleet look more deliberately curated than it was.
+test('a repo the collector could not evaluate is not counted as deliberately withheld', () => {
+  const snap = snapshot([repo()], 2, 3);
+
+  assert.equal(withheldCount(snap), 2);
+  assert.equal(unreadableCount(snap), 3);
+});
+
+test('an absent or nonsensical unreadable count reads as unknown, not zero', () => {
+  for (const value of [undefined, null, -1, 1.5, Number.NaN, '2', {}]) {
+    const bad = { ...snapshot([repo()]), unreadable: value as number };
+    assert.equal(unreadableCount(bad), null, `unreadable ${JSON.stringify(value)} is unknown`);
+  }
+});
+
+test('the governed denominator counts every row the snapshot carries', () => {
+  const snap = snapshot([repo()], 2, 1);
+  assert.equal(governedCount(snap), 4);
+});
+
+// The backstop firing must leave evidence. Deriving the denominator from
+// `visibleRepos` shrank both sides of "published X of Y governed" in step, so
+// a row dropped at render time vanished instead of reading as a discrepancy.
+test('a row dropped by the frontend backstop widens the gap instead of vanishing', () => {
+  const snap = snapshot(
+    [repo({ name: 'clean' }), repo({ name: 'leaked', visibility: 'private' })],
+    0,
+    0,
+  );
+
+  const published = visibleRepos(snap).length;
+  const governed = governedCount(snap);
+  assert.equal(published, 1, 'the backstop must drop the non-public row');
+  assert.equal(governed, 2, 'the denominator must still count it');
+  assert.ok(governed !== null && published < governed, 'the gap is the signal');
+});
+
+test('an unknown withheld or unreadable count makes the denominator unknown', () => {
+  for (const [withheld, unreadable] of [
+    [null, 0],
+    [0, null],
+    [-1, 0],
+    [0, 1.5],
+  ]) {
+    const snap = { ...snapshot([repo()]), withheld, unreadable } as Snapshot;
+    assert.equal(governedCount(snap), null, `withheld ${withheld}, unreadable ${unreadable}`);
+  }
+});
+
+test('the two counts are never collapsed into one number', () => {
+  // Zero withheld with a non-zero unreadable must stay visibly different from
+  // the reverse: one says the fleet is fully opted in, the other says the run
+  // could not tell. Summing them loses exactly that.
+  const couldNotTell = snapshot([repo()], 0, 4);
+  const deliberate = snapshot([repo()], 4, 0);
+
+  assert.notDeepEqual(
+    [withheldCount(couldNotTell), unreadableCount(couldNotTell)],
+    [withheldCount(deliberate), unreadableCount(deliberate)],
   );
 });

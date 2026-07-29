@@ -6,6 +6,12 @@
  * Publishes counts and boolean posture only — never alert titles, paths,
  * CVEs, secret material, or private vulnerability report bodies.
  *
+ * That rule is enforced, not just stated: `tools/snapshot-schema.mjs` is the
+ * executable contract, and `npm run validate` refuses to publish an artifact
+ * that violates it. Adding a field here without adding it there fails the run —
+ * deliberately, because a comment cannot fail a build and the published surface
+ * was otherwise free to grow silently on the next hourly cron.
+ *
  * Publication is opt-in and double-gated (see DESIGN.md): a repo is collected
  * only if the manifest sets `publish: true`, and it is emitted only if GitHub
  * reports it as public at collection time. A repo that fails either gate
@@ -28,6 +34,14 @@ const API = 'https://api.github.com';
 
 /** Longest manifest `delta` string that may reach the published page. */
 export const MAX_DELTA_LENGTH = 200;
+
+/**
+ * Longest workflow name that may reach the published page. The schema's
+ * `CAPS.workflowName` imports this — the same direction `delta`'s cap already
+ * flows, schema importing collector — so there is one number and the schema
+ * cannot drift from the truncation applied at collect time.
+ */
+export const MAX_WORKFLOW_NAME_LENGTH = 128;
 
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
@@ -355,6 +369,24 @@ async function fetchSecurityFloor(repo, detail) {
   };
 }
 
+/**
+ * GitHub-authored free text crossing into the artifact the fail-closed gate
+ * inspects. The schema rejects a snapshot whose workflow name exceeds the cap
+ * or carries a control character — correctly, but validation runs fleet-wide:
+ * left unsanitized, one repo's overlong or newline-bearing workflow name would
+ * block publication for every repo in the fleet.
+ *
+ * Unlike `delta` this truncates rather than drops. A delta is authored copy
+ * where a half-sentence misleads; a workflow name is a label, and a clipped
+ * label still identifies the workflow where an absent one renders as no CI.
+ */
+export function sanitizeWorkflowName(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  const cleaned = value.replace(new RegExp(CONTROL_CHARS.source, 'gu'), '');
+  if (cleaned === '') return null;
+  return cleaned.slice(0, MAX_WORKFLOW_NAME_LENGTH);
+}
+
 async function fetchCi(repo, defaultBranch) {
   // Reads through `gh`, not `ghJson`. Dropping Actions: Read returns 403, and
   // `ghJson` throws on it — killing the whole collection over one repo's CI
@@ -375,7 +407,7 @@ async function fetchCi(repo, defaultBranch) {
     };
   }
   return {
-    workflowName: run.name ?? null,
+    workflowName: sanitizeWorkflowName(run.name),
     conclusion: run.conclusion ?? null,
     status: run.status ?? null,
     updatedAt: run.updated_at ?? null,
@@ -533,7 +565,8 @@ export async function fetchRepoForGate(name, failures = []) {
 }
 
 /** Returns the redacted row, or `null` if the repo must not be published. */
-async function collectRepo(entry, failures) {
+/** Exported for the round-trip test: collector output must satisfy the schema. */
+export async function collectRepo(entry, failures) {
   const detail = await fetchRepoForGate(entry.name, failures);
   // Withheld before any alert or CI call: nothing we do not publish is fetched.
   // The name is deliberately not logged — see the summary in main().
@@ -600,14 +633,28 @@ async function main() {
     if (row) repos.push(row);
   }
 
-  const withheld = governed.length - repos.length;
   // Counts only. Naming the withheld repos in an Actions log on a public
   // repository would republish exactly what the gates just withheld.
-  const notOptedIn = governed.length - candidates.length;
-  const notObservedPublic = candidates.length - repos.length;
+  //
+  // `withheld` is a count of *decisions*, so a repo whose gate call failed does
+  // not belong in it. Both produce no published row, which is why they were one
+  // number — but they mean opposite things to a reader. "We chose not to publish
+  // these" is a stable, reassuring statement about a fleet under control; "we
+  // could not tell" is a transient failure that will resolve itself next hour,
+  // and folding it into the reassuring number is the same defect as a denied
+  // read rendering as a green zero, one level up. A rate limit made the fleet
+  // look more deliberately curated than it was.
+  const tally = publicationTally({
+    governed: governed.length,
+    candidates: candidates.length,
+    published: repos.length,
+    unreadable: gateFailures.length,
+  });
+  const { withheld, unreadable, notOptedIn, notObservedPublic } = tally;
   warn(
     `withheld ${withheld} of ${governed.length} governed repos ` +
-      `(${notOptedIn} without publish: true, ${notObservedPublic} not observed public)`,
+      `(${notOptedIn} without publish: true, ${notObservedPublic} not observed public)` +
+      (unreadable > 0 ? `, and ${unreadable} could not be read at all` : ''),
   );
   if (gateFailures.length) {
     // Sorted and tallied, so the order tells you nothing about which candidate
@@ -626,10 +673,14 @@ async function main() {
   //
   // The run still fails (see pages.yml) so the blank is noticed, not just served.
   if (repos.length === 0) {
+    // The breakdown must include the failure bucket: when emptiness is caused
+    // by gate failures, `notOptedIn` and `notObservedPublic` are both zero and
+    // a message listing only decisions would explain nothing.
     warn(
       `WARNING: no repos passed the publication gates — publishing an empty snapshot. ` +
         `${governed.length} governed, ${notOptedIn} without publish: true, ` +
-        `${notObservedPublic} not observed public.`,
+        `${notObservedPublic} not observed public` +
+        (unreadable > 0 ? `, and ${unreadable} could not be read at all.` : '.'),
     );
   }
 
@@ -642,6 +693,9 @@ async function main() {
       manifestPath: MANIFEST_PATH,
     },
     withheld,
+    // Kept apart from `withheld` because they are not the same claim: this one
+    // is "the gate could not be evaluated", which is a failure, not a decision.
+    unreadable,
     // Why reads were missing, in aggregate and never per repo. A `null` count
     // used to mean "denied" and "rate limited" indistinguishably; the first is
     // a permission that will not change this run, the second is transient.
@@ -664,6 +718,49 @@ async function main() {
   // the write throws, the step fails, `fresh` is false, and the stale gate — not
   // this one — is the accurate complaint.
   reportDegradation(reasons);
+}
+
+/**
+ * How the governed set divides, with failures kept out of the decisions.
+ *
+ * Every governed repo lands in exactly one bucket, and the invariant
+ * `published + withheld + unreadable === governed` is what makes the published
+ * denominator mean anything. It is asserted here rather than trusted, because
+ * the failure is silent in both directions: too high and the page claims a
+ * fleet larger than it is, too low and a repo vanishes with nothing to say so.
+ *
+ * `withheld` counts *decisions* — not opted in, or observed non-public.
+ * `unreadable` counts gates that could not be evaluated. Both publish no row,
+ * which is why they were once one number, but they are opposite claims about
+ * whether the fleet is under control.
+ */
+export function publicationTally({ governed, candidates, published, unreadable }) {
+  const notOptedIn = governed - candidates;
+  const notObservedPublic = candidates - published - unreadable;
+  const withheld = notOptedIn + notObservedPublic;
+
+  // The last condition is implied by the two above it: with non-negative
+  // integer inputs the sum reduces to `governed` algebraically, so no *input*
+  // can trip it. It is not dead. It is the only guard against a future change
+  // to the *derivation* — dropping the `- unreadable` term above makes it the
+  // sole thing that fires. Verified by doing exactly that with the other checks
+  // removed. Noted because the alternative reading is that it is an unreachable
+  // branch pretending to be a safety net.
+  if (
+    [governed, candidates, published, unreadable].some((n) => !Number.isInteger(n) || n < 0) ||
+    notOptedIn < 0 ||
+    notObservedPublic < 0 ||
+    published + withheld + unreadable !== governed
+  ) {
+    // Not recoverable by guessing. Publishing a denominator we cannot derive
+    // would state something about the fleet that is not true.
+    throw new Error(
+      `publication tally does not add up: ${published} published + ${withheld} withheld + ` +
+        `${unreadable} unreadable != ${governed} governed`,
+    );
+  }
+
+  return { withheld, unreadable, notOptedIn, notObservedPublic };
 }
 
 /**
@@ -690,8 +787,10 @@ const FLOOR_FLAG_FOR_COUNT = {
  * good one: green check, published page, question marks nobody was told about.
  *
  * Two sources, and they overlap on purpose. The artifact is what gets
- * published: a 404 yields a `null` count without touching a counter, so only
- * the snapshot knows whether the page will show a `?`. The health counters see
+ * published: a 404 yields a `null` count without touching a counter, and a
+ * gate lookup that 404s or returns an unparseable body reaches `unreadable`
+ * without touching one either — so only the snapshot knows what the page will
+ * show, a `?` or a repo the run could not evaluate at all. The health counters see
  * what the artifact cannot: a denied or rate-limited read against a repo the
  * gates then withheld leaves no trace in `repos` at all. Including both means
  * a denied posture read on a published repo is reported twice — once as
@@ -720,6 +819,17 @@ export function degradedReasons(snapshot) {
   if (health.denied > 0) reasons.push(`${health.denied} denied`);
   if (health.rateLimited > 0) reasons.push(`${health.rateLimited} rate-limited`);
   if (health.failed > 0) reasons.push(`${health.failed} failed or timed out`);
+
+  // The path the counters cannot see. A deleted repo left in the manifest with
+  // `publish: true` 404s at the gate: no counter moves, no row publishes, and
+  // without this check the run stays green while the page reports a repo it
+  // could not evaluate. The snapshot is the only place that failure survives.
+  // Guarded like every count read back out of an artifact: anything that is
+  // not a sane count is not evidence of degradation.
+  const unreadable = snapshot?.unreadable;
+  if (Number.isInteger(unreadable) && unreadable > 0) {
+    reasons.push(`${unreadable} repos unreadable at the gate`);
+  }
 
   let unknown = 0;
   for (const repo of snapshot?.repos ?? []) {
