@@ -232,7 +232,16 @@ async function ghJson(pathname, { label = 'request', ...options } = {}) {
     throw new Error(`${label} failed → ${response.status}${detail}`);
   }
   if (response.status === 204) return null;
-  return response.json();
+  // The OK path can leak too: V8's JSON SyntaxError quotes a snippet of the
+  // input it choked on, so an unguarded `.json()` on a garbled 200 puts body
+  // bytes into the throw — the same route to a public log as the not-ok
+  // branch, just dressed as a parse error. Same rule: the label, nothing
+  // derived from the response.
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`${label} returned unparseable JSON`);
+  }
 }
 
 /**
@@ -273,8 +282,11 @@ export async function countOpenAlerts(repo, kind) {
   const last = [...link.matchAll(/[?&]page=(\d+)>;\s*rel="last"/g)].pop();
   if (last) return Number(last[1]);
 
-  const rows = await response.json();
-  return Array.isArray(rows) ? rows.length : 0;
+  // `.json()` was the one path left that could throw: V8's parse error quotes
+  // the body it choked on. A garbled body is an unknown count — null, not 0,
+  // so it renders `?` rather than a green zero nobody questions.
+  const rows = await response.json().catch(() => null);
+  return Array.isArray(rows) ? rows.length : null;
 }
 
 async function fetchSecurityFloor(repo, detail) {
@@ -287,8 +299,12 @@ async function fetchSecurityFloor(repo, detail) {
   let privateVulnerabilityReporting = null;
   const pvr = await gh(`/repos/${ACCOUNT}/${repo}/private-vulnerability-reporting`);
   if (pvr.ok) {
-    const body = await pvr.json();
-    privateVulnerabilityReporting = Boolean(body.enabled);
+    // The same guard the branch-ruleset read below already carries: V8's parse
+    // error quotes the body, and an uncaught throw here rides main().catch()
+    // into a public log. An unparseable body leaves the bit unknown, like a
+    // denied one.
+    const body = await pvr.json().catch(() => null);
+    if (body) privateVulnerabilityReporting = Boolean(body.enabled);
   } else if (pvr.status === 404 || pvr.status === 403) {
     privateVulnerabilityReporting = null;
   }
@@ -296,8 +312,8 @@ async function fetchSecurityFloor(repo, detail) {
   let codeqlConfigured = null;
   const codeql = await gh(`/repos/${ACCOUNT}/${repo}/code-scanning/default-setup`);
   if (codeql.ok) {
-    const body = await codeql.json();
-    codeqlConfigured = body.state === 'configured' || body.state === 'CodeQL exists';
+    const body = await codeql.json().catch(() => null);
+    if (body) codeqlConfigured = body.state === 'configured' || body.state === 'CodeQL exists';
   } else if (codeql.status === 404) {
     codeqlConfigured = false;
   } else if (codeql.status === 403) {
@@ -470,7 +486,14 @@ export async function loadManifest() {
   });
   if (!file?.content) throw new Error('Unable to load governance/repos.json');
   const raw = Buffer.from(file.content, 'base64').toString('utf8');
-  return JSON.parse(raw);
+  // JSON.parse's SyntaxError quotes the text it choked on — here, decoded file
+  // content from a private repo. The filename is everything a maintainer needs
+  // to fix it; the content is exactly what must not reach a public log.
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('governance/repos.json is not valid JSON');
+  }
 }
 
 /**
