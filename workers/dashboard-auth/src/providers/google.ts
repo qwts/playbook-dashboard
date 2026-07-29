@@ -6,8 +6,8 @@
  * from the `sub` claim of the returned id_token.
  */
 
-import { decodeJwtPayload } from '../crypto';
-import type { Env } from '../env';
+import { decodeJwtPayload } from '../crypto.ts';
+import type { Env } from '../env.ts';
 
 const AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
