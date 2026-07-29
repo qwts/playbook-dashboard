@@ -10,12 +10,20 @@
   --warn: #c4923a;
   --danger: #c45c4a;
   --ok: #4ea37a;
-  --font-sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   color: var(--ink);
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(61, 143, 110, 0.18), transparent 55%),
-    radial-gradient(900px 500px at 90% 0%, rgba(196, 146, 58, 0.08), transparent 50%),
+    radial-gradient(
+      1200px 600px at 10% -10%,
+      rgba(61, 143, 110, 0.18),
+      transparent 55%
+    ),
+    radial-gradient(
+      900px 500px at 90% 0%,
+      rgba(196, 146, 58, 0.08),
+      transparent 50%
+    ),
     linear-gradient(180deg, #121815 0%, var(--bg-0) 40%, #0c100e 100%);
   font-family: var(--font-sans);
   font-synthesis: none;
@@ -92,15 +100,15 @@ a {
   gap: 0.4rem;
 }
 
-.pill[data-tone='warn'] {
+.pill[data-tone="warn"] {
   color: var(--warn);
 }
 
-.pill[data-tone='ok'] {
+.pill[data-tone="ok"] {
   color: var(--ok);
 }
 
-.pill[data-tone='danger'] {
+.pill[data-tone="danger"] {
   color: var(--danger);
 }
 
@@ -139,15 +147,15 @@ a {
 }
 
 /* A headline figure that is partly unreadable must not read as a clean count. */
-.stat .value[data-tone='ok'] {
+.stat .value[data-tone="ok"] {
   color: var(--ok);
 }
 
-.stat .value[data-tone='warn'] {
+.stat .value[data-tone="warn"] {
   color: var(--warn);
 }
 
-.stat .value[data-tone='danger'] {
+.stat .value[data-tone="danger"] {
   color: var(--danger);
 }
 
@@ -230,25 +238,25 @@ tr:last-child td {
   background: var(--bg-0);
 }
 
-.badge[data-tone='ok'] {
+.badge[data-tone="ok"] {
   color: var(--ok);
   border-color: rgba(78, 163, 122, 0.45);
   background: rgba(78, 163, 122, 0.1);
 }
 
-.badge[data-tone='warn'] {
+.badge[data-tone="warn"] {
   color: var(--warn);
   border-color: rgba(196, 146, 58, 0.45);
   background: rgba(196, 146, 58, 0.1);
 }
 
-.badge[data-tone='danger'] {
+.badge[data-tone="danger"] {
   color: var(--danger);
   border-color: rgba(196, 92, 74, 0.45);
   background: rgba(196, 92, 74, 0.1);
 }
 
-.badge[data-tone='muted'] {
+.badge[data-tone="muted"] {
   color: var(--ink-muted);
 }
 
@@ -285,4 +293,135 @@ tr:last-child td {
 .value .qualifier {
   font-size: 0.9rem;
   font-weight: 500;
+}
+
+.link-button {
+  margin-left: 0.5rem;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.signin {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 2rem 1rem;
+}
+
+.signin-inner {
+  width: min(34rem, 100%);
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+}
+
+.signin-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.signin-brand {
+  margin: 0;
+  font-size: clamp(2.4rem, 7vw, 3.6rem);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+}
+
+.signin-lede {
+  margin: 0;
+  max-width: 30rem;
+  color: var(--ink-muted);
+  line-height: 1.55;
+}
+
+.signin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.auth-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 1.1rem;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.auth-button svg {
+  width: 1.05em;
+  height: 1.05em;
+}
+
+.auth-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.auth-button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.auth-button[data-variant="apple"] {
+  border-color: transparent;
+  background: var(--ink);
+  color: var(--bg-0);
+}
+
+.auth-button[data-variant="apple"]:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.auth-button[data-variant="google"]:hover:not(:disabled),
+.auth-button[data-variant="github"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.auth-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.signin-error {
+  margin: 0.25rem 0 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-button {
+    transition: none;
+  }
+
+  .auth-button:hover:not(:disabled) {
+    transform: none;
+  }
 }

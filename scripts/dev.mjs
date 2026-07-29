@@ -7,10 +7,15 @@
  * a passphrase file when the env var is unset. The passphrase value is never
  * logged or written to disk by this script.
  *
+ * Auth is bypassed locally by default: the /auth/* endpoints live in the
+ * Cloudflare Worker, which Vite does not serve. Set VITE_AUTH_DISABLED=0 and
+ * run `wrangler dev` in front of this server to exercise the real flow.
+ *
  * Defaults:
  *   certs dir:   ~/.quorum/certs
  *   passphrase:  ~/.quorum/certs/key.passphrase  (via DASHBOARD_TLS_KEY_PASSPHRASE_FILE)
  *   listen:      https://local.dev.zts1.com:8443
+ *   auth:        disabled (VITE_AUTH_DISABLED=1)
  */
 
 import { spawn } from 'node:child_process';
@@ -25,6 +30,7 @@ const DEFAULT_CERTS_DIR = path.join(homedir(), '.quorum', 'certs');
 const DEFAULT_PORT = '8443';
 const DEFAULT_BIND = '127.0.0.1';
 const BROWSE_HOST = 'local.dev.zts1.com';
+const DEFAULT_AUTH_DISABLED = '1';
 
 function loadPassphraseIntoEnv() {
   if (process.env.DASHBOARD_TLS_KEY_PASSPHRASE) {
@@ -56,19 +62,30 @@ function loadPassphraseIntoEnv() {
 }
 
 function main() {
+  const viteArgs = process.argv.slice(2);
+  // `preview` serves an existing build, where VITE_AUTH_DISABLED was already baked in.
+  const isPreview = viteArgs.includes('preview');
+
   process.env.DASHBOARD_TLS_CERTS_DIR ||= DEFAULT_CERTS_DIR;
   process.env.DASHBOARD_DEV_BIND ||= DEFAULT_BIND;
   process.env.DASHBOARD_DEV_PORT ||= DEFAULT_PORT;
+  if (!isPreview) {
+    process.env.VITE_AUTH_DISABLED ||= DEFAULT_AUTH_DISABLED;
+  }
 
   loadPassphraseIntoEnv();
 
   const port = process.env.DASHBOARD_DEV_PORT;
+  const authMode = isPreview
+    ? 'auth as built'
+    : process.env.VITE_AUTH_DISABLED === '1'
+      ? 'auth bypassed'
+      : 'auth enabled (needs wrangler dev)';
   console.log(
-    `Local HTTPS → https://${BROWSE_HOST}:${port}/ (bound ${process.env.DASHBOARD_DEV_BIND})`,
+    `Local HTTPS → https://${BROWSE_HOST}:${port}/ (bound ${process.env.DASHBOARD_DEV_BIND}, ${authMode})`,
   );
 
   const viteBin = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
-  const viteArgs = process.argv.slice(2);
   const child = spawn(process.execPath, [viteBin, ...viteArgs], {
     cwd: ROOT,
     env: process.env,

@@ -81,5 +81,20 @@ export default defineConfig(({ command }) => {
     plugins: [react(), servedWithoutPolicy()],
     server: listenOptions(localTls),
     preview: listenOptions(localTls),
+    build: {
+      // Enforcement lives in the Worker, so this is hygiene rather than a
+      // control: mangle names, drop dev-only calls, and ship no source maps.
+      minify: 'terser',
+      sourcemap: false,
+      terserOptions: {
+        compress: {
+          drop_console: true,
+          drop_debugger: true,
+          passes: 2,
+        },
+        mangle: { toplevel: true },
+        format: { comments: false },
+      },
+    },
   };
 });

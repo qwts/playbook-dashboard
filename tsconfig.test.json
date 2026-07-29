@@ -1,7 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["node"]
+    // Tests run under node, but they pull in src/lib, which is browser code
+    // built by Vite — `import.meta.env` needs vite/client to stay typed here.
+    "types": ["node", "vite/client"]
   },
   "include": ["src/**/*.test.ts", "src/lib", "src/types"],
   "exclude": []

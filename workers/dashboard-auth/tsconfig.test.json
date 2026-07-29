@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Tests run under node, not workerd. Both declare the web globals this code
+    // uses (Request, crypto.subtle), so the worker types are dropped here rather
+    // than layered — two sets of ambient globals collide.
+    "types": ["node"]
+  },
+  "include": ["src/**/*.test.ts", "src/crypto.ts", "src/env.ts", "src/session.ts"]
+}
