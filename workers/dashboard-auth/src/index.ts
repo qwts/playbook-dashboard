@@ -1,7 +1,7 @@
 /**
  * Edge auth gate for the playbook dashboard.
  *
- * Sits in front of the GitHub Pages origin on dashboard.dev.zts1.com and is the
+ * Sits in front of the GitHub Pages origin on dashboard.qwts.org and is the
  * only place that holds IdP secrets. The static shell stays public so the SPA
  * can render its own sign-in screen; the redacted snapshot under /data/* is
  * what actually requires a session. Any account that completes a sign-in with a
