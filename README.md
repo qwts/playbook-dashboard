@@ -111,19 +111,24 @@ collector publishes.
    authorised redirect URI `https://dashboard.qwts.org/auth/callback`.
 3. **GitHub OAuth App** — set the authorization callback URL to
    `https://dashboard.qwts.org/auth/callback`.
-4. **DNS** — in the Cloudflare `qwts.org` zone, add `dashboard` as a `CNAME` to
-   `qwts.github.io`, **DNS-only** at first so GitHub Pages can complete HTTP-01
-   validation and issue its certificate. Once *Enforce HTTPS* is available,
-   switch the record to **Proxied** to attach the Worker route
-   `dashboard.qwts.org/*`. Proxying before the Pages certificate exists returns
-   `526` under SSL/TLS mode Full (strict).
+4. **DNS** — in the Cloudflare `qwts.org` zone, add `dashboard` as a **proxied**
+   `CNAME` to `qwts.github.io`. Because the record targets a hostname rather
+   than an IP, Cloudflare validates the origin leg against GitHub's
+   `*.github.io` certificate, so SSL/TLS mode **Full (strict)** works without
+   Pages ever issuing a certificate of its own. Set the custom domain in repo
+   Settings → Pages to match `public/CNAME`; a deploy resets it to whatever
+   that file says.
 5. **Worker secrets** — `SESSION_SECRET`, `GITHUB_CLIENT_ID`,
    `GITHUB_CLIENT_SECRET`, `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`,
    `APPLE_PRIVATE_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` via
    `wrangler secret put`. CI never sees them.
-6. **Actions secrets** — `CLOUDFLARE_API_TOKEN` (account-scoped, *Workers
-   Scripts: Edit*) and `CLOUDFLARE_ACCOUNT_ID`, so
-   `.github/workflows/worker.yml` can deploy.
+6. **Actions secrets** — `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, so
+   `.github/workflows/worker.yml` can deploy. Attaching a route is a zone-level
+   operation, so an account-only token uploads the script and then fails: the
+   token needs *Account → Workers Scripts → Edit*, *Zone → Workers Routes →
+   Edit*, and *Zone → Zone → Read*, which is what the built-in **Edit
+   Cloudflare Workers** template grants. Scope it to this account and the
+   `qwts.org` zone.
 
 Any provider whose secrets are unset returns `provider_not_configured`; the
 others keep working.
