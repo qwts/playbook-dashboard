@@ -25,7 +25,8 @@ vulnerability report bodies.
 
 **Stack.** Vite + React + TypeScript. `npm run dev` serves local HTTPS;
 `npm run build` produces the Pages artifact; `npm run collect` rebuilds
-`public/data/snapshot.json` from GitHub APIs; `npm run ci` is typecheck + build.
+`public/data/snapshot.json` from GitHub APIs; `npm run ci` is typecheck + test +
+build, and is required before every push.
 
 **Local TLS.** Certs live under `~/.quorum/certs` (CN `local.dev.zts1.com`).
 The encrypted key passphrase is loaded only through the environment variable
@@ -33,6 +34,23 @@ The encrypted key passphrase is loaded only through the environment variable
 reads `~/.quorum/certs/key.passphrase` (or `DASHBOARD_TLS_KEY_PASSPHRASE_FILE`)
 into that env var when unset. Bind `127.0.0.1`, browse
 `https://local.dev.zts1.com:8443/` (port **8443**, not 443).
+
+**`FLEET_DASHBOARD_TOKEN` is an environment secret, not a repository secret.**
+It is scoped to the `github-pages` environment deliberately, and the difference
+is the security boundary: a repository secret is readable by any workflow on any
+branch, so a PR that adds a step could read the fleet credential. Scoping it to
+an environment whose branch policy is `main`-only means a run from any other ref
+is refused before its first step and the PAT never reaches a runner. If the
+collect job cannot see the token, the fix is to check the environment's branch
+policy — never to move the secret up to the repository, and never to widen a
+`permissions:` block. The cost is that the collect job cannot be smoke-tested
+from a branch; that is the intended trade.
+
+**Workflows are not exercised by CI.** `pages.yml` has no `pull_request`
+trigger, so nothing runs it before merge. `tools/workflows.test.mjs` asserts
+against its source — job bounds, SHA pinning, least-privilege, `outcome` vs
+`conclusion`, and the output-key contract with the collector. Changing the
+workflow means changing those assertions deliberately, not deleting them.
 
 **Redaction contract.** Collector and UI share the `Snapshot` schema in
 `src/types/snapshot.ts`. Prefer failing closed (null counts) over leaking

@@ -15,6 +15,10 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
+    # ~2 minutes in practice. Lower stakes than pages.yml — no credential, no
+    # shared concurrency group — but the default is still six hours of runner
+    # for a hung install, and DESIGN.md promises every job a bound.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

@@ -135,6 +135,118 @@ The failure this prevents is specific: a dashboard that looks most reassuring
 exactly where it knows least. For a tool whose entire job is reporting posture,
 that is the one error nobody ever investigates.
 
+## Decision: the job that signs runs nothing that could abuse the signature
+
+`id-token: write` mints an OIDC token asserting `repo:qwts/playbook-dashboard`,
+which matters wherever a cloud role trusts that subject. It sat in the job that
+runs `npm run build` — vite, esbuild, and every plugin in the tree.
+`--ignore-scripts` closes *install*-time execution and does nothing about
+*build*-time execution, which is the entire purpose of a bundler.
+
+Nothing in this organization trusts that subject today. That is why this was low
+severity rather than urgent — and it is also the reason not to leave the
+capability lying there, because "nothing trusts it today" is exactly the kind of
+assumption that stops being true when someone adds a cloud role, without anyone
+revisiting this workflow.
+
+**Attestation moved to its own job.** `attest` downloads the built files and
+signs them, running no checkout, no npm, and no repository code at all — only
+SHA-pinned GitHub-owned actions over files this workflow already produced.
+`build` drops to `contents: read`, the same property `collect` has.
+
+**Rejected: attesting from `deploy`.** It needs one job fewer and `deploy`
+already holds `id-token: write` for `deploy-pages`, so it looked like the
+cheapest answer. It attests the Pages **tarball** — one subject instead of many.
+`data/snapshot.json` would stop being individually verifiable, and for a
+repository whose product is auditable claims about security posture, binding the
+published snapshot by digest to a run of this workflow *is* the product. A
+reader can check where the bytes came from; coarsening the subject to a tarball
+removes that and is hard to walk back.
+
+**What the attestation proves — and what it does not.** Provenance: these exact
+bytes were produced by this workflow, at this commit, in this run. Not
+freshness. A run whose credential died still builds, attests, and publishes the
+committed fixture, and its attestation is valid and never revoked — the fixture
+genuinely *was* produced by this workflow at that commit. Freshness lives in
+the run's conclusion, which is exactly what the gates in the next section
+redden. A verifier who cares that a number is *current*, not merely authentic,
+must check both: the digest against the attestation, and the attested run's
+conclusion.
+
+**Rejected: leaving it in `build`.** Best granularity, but it keeps a signing
+grant beside the toolchain that executes third-party build code — the thing
+being avoided.
+
+The cost is one job and one artifact round-trip: `build` uploads `dist` a second
+time as individual files, because `upload-pages-artifact` produces a tarball and
+per-file subjects need the files. Same bytes either way.
+
+`attest` runs in parallel with `deploy` rather than gating it. An attestation
+failure must not take the site down — but the run still goes red, which is the
+shape every other gate in this workflow uses.
+
+## Decision: a run that succeeded is not a run that was complete
+
+The rule above governs the page. This one governs the run that builds it, and it
+is the same rule one layer out: a green check must not be the most reassuring
+thing about a collection that could not read the fleet.
+
+`continue-on-error` on the collect step distinguishes exactly two states —
+collection failed, collection succeeded. A collection that succeeded while
+denied half its reads is a third, and it wore the first one's colours: green
+check, published page, question marks nobody was told about. The UI stopped
+lying about it in #3; CI kept lying about it until #12.
+
+So the workflow carries two independent signals out of the collect job, because
+they want opposite handling:
+
+| | `fresh` | `degraded` | outcome |
+|---|---|---|---|
+| clean run | `true` | `false` | publish, green |
+| partial reads | `true` | `true` | **publish**, then fail |
+| collection failed | `false` | — | publish the committed fixture, then fail |
+
+The middle row is the decision. A degraded snapshot is still the freshest truth
+available, so it ships — degradation must not ride on the step's exit code,
+because a non-zero exit makes `fresh` false and swaps in the committed fixture,
+discarding the better artifact to report the smaller problem. Both gates run
+*after* `deploy-pages` for the same reason #20 established: a legible degraded
+dashboard beats an outage.
+
+**Degradation is read from the artifact and the counters, overlapping on
+purpose.** A 404 yields a `null` count without touching a health counter, so
+only the snapshot knows whether the page will show a `?`; a denied read against
+a repo the gates then withheld leaves no trace in the snapshot, so only the
+counters see it. The overlap means a denied posture read can be reported twice
+and a failed gate call reddens the run for a repo that was never going to be
+published — accepted, because this gate exists to defeat silence and every
+overlap errs loud.
+
+Not every `null` is a failed read. A fact the manifest never asserted
+(`codexSyncEnabled`) does not count, and neither does a count whose feature the
+owner turned off — GitHub answers 403/404 on the alerts endpoints for a
+disabled scanner, a permanent chosen state the page already shows via the floor
+flag. Counting either would redden every hourly run forever, and a gate that is
+always red is a gate nobody reads.
+
+**Bounding the run.** Every request has a deadline, but a deadline cannot bound
+a wedged runner or a hung install, so every job declares `timeout-minutes`. The
+default is 360: six hours holding a concurrency group that does not cancel, on
+an hourly schedule, while holding the fleet credential.
+
+`cancel-in-progress` stays `false`, and that is now a decision rather than an
+inherited default. Cancelling would interrupt `deploy-pages` mid-flight; the
+queue argument for accepting that risk does not survive bounded jobs, since
+Actions holds at most one pending run per group and a newer arrival replaces the
+pending one rather than stacking behind it.
+
+**`pages.yml` is never executed by a pull request.** It has no `pull_request`
+trigger, so a change that breaks it merges clean and is discovered by the hourly
+schedule, in production, with the credential in hand. `tools/workflows.test.mjs`
+asserts against the workflow source instead — including the contract between the
+collector's output keys and the gate that reads them, which spans two files and
+which neither file's own tests can see.
+
 ## Local development
 
 - Browse URL: `https://local.dev.zts1.com:8443/`
