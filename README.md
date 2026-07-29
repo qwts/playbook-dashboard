@@ -79,7 +79,7 @@ out of the bundle.
 
 ## Authentication
 
-`dashboard.dev.zts1.com` sits behind the Cloudflare Worker in
+`dashboard.qwts.org` sits behind the Cloudflare Worker in
 [`workers/dashboard-auth`](workers/dashboard-auth), which is the only component
 holding identity-provider secrets. It gates `/data/*` — the static shell stays
 public so the SPA can render its own sign-in screen.
@@ -98,27 +98,41 @@ collector publishes.
 
 ### One-time setup
 
-1. **Apple Developer portal** — create a Services ID (the web `client_id`),
-   enable Sign in with Apple, and register the return URL
-   `https://dashboard.dev.zts1.com/auth/callback`. Create a Sign in with Apple
-   key and download the `AuthKey_XXXXXXXX.p8`.
+1. **Apple Developer portal** — create a Services ID (the web `client_id`) and
+   enable Sign in with Apple with the return URL
+   `https://dashboard.qwts.org/auth/callback`. Registering the domain produces
+   an `apple-developer-domain-association.txt`: commit it to
+   `public/.well-known/` and let Pages deploy it *before* pressing **Verify**,
+   because Apple fetches it from the live site and the Worker proxies that path
+   to the Pages origin. The association file is a public ownership token and
+   belongs in the repository. The `AuthKey_XXXXXXXX.p8` from the same portal
+   does not — it is downloaded once and lives only in the `APPLE_PRIVATE_KEY`
+   Worker secret.
 2. **Google Cloud console** — create a project, configure the OAuth consent
    screen as **External** and publish it (an unpublished app only admits test
-   users), then create an **OAuth client ID** of type *Web application* with the
-   authorised redirect URI `https://dashboard.dev.zts1.com/auth/callback`.
+   users), verify `qwts.org` in Search Console and list it as an authorised
+   domain, then create an **OAuth client ID** of type *Web application* with the
+   authorised redirect URI `https://dashboard.qwts.org/auth/callback`.
 3. **GitHub OAuth App** — set the authorization callback URL to
-   `https://dashboard.dev.zts1.com/auth/callback`.
-4. **DNS** — move `dashboard.dev.zts1.com` from the Route 53 `CNAME` to a
-   Cloudflare-proxied record targeting GitHub Pages, then attach the Worker
-   route `dashboard.dev.zts1.com/*`. Keep `public/CNAME` as-is so Pages still
-   serves the custom domain.
+   `https://dashboard.qwts.org/auth/callback`.
+4. **DNS** — in the Cloudflare `qwts.org` zone, add `dashboard` as a **proxied**
+   `CNAME` to `qwts.github.io`. Because the record targets a hostname rather
+   than an IP, Cloudflare validates the origin leg against GitHub's
+   `*.github.io` certificate, so SSL/TLS mode **Full (strict)** works without
+   Pages ever issuing a certificate of its own. Set the custom domain in repo
+   Settings → Pages to match `public/CNAME`; a deploy resets it to whatever
+   that file says.
 5. **Worker secrets** — `SESSION_SECRET`, `GITHUB_CLIENT_ID`,
    `GITHUB_CLIENT_SECRET`, `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`,
    `APPLE_PRIVATE_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` via
    `wrangler secret put`. CI never sees them.
-6. **Actions secrets** — `CLOUDFLARE_API_TOKEN` (account-scoped, *Workers
-   Scripts: Edit*) and `CLOUDFLARE_ACCOUNT_ID`, so
-   `.github/workflows/worker.yml` can deploy.
+6. **Actions secrets** — `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, so
+   `.github/workflows/worker.yml` can deploy. Attaching a route is a zone-level
+   operation, so an account-only token uploads the script and then fails: the
+   token needs *Account → Workers Scripts → Edit*, *Zone → Workers Routes →
+   Edit*, and *Zone → Zone → Read*, which is what the built-in **Edit
+   Cloudflare Workers** template grants. Scope it to this account and the
+   `qwts.org` zone.
 
 Any provider whose secrets are unset returns `provider_not_configured`; the
 others keep working.
@@ -136,7 +150,7 @@ over emitting privileged detail.
 ## Deploy
 
 GitHub Actions builds the site and deploys to GitHub Pages at
-`https://dashboard.dev.zts1.com/`. The auth Worker deploys separately from
+`https://dashboard.qwts.org/`. The auth Worker deploys separately from
 `.github/workflows/worker.yml` whenever `workers/` changes on `main`, using the
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. The deploy step is
 gated on the ref rather than the event, so a `workflow_dispatch` run cannot

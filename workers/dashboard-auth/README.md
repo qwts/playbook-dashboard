@@ -1,6 +1,6 @@
 # dashboard-auth Worker
 
-Edge auth gate for `dashboard.dev.zts1.com`. Apple, Google, and GitHub are all
+Edge auth gate for `dashboard.qwts.org`. Apple, Google, and GitHub are all
 accepted identity providers. This Worker is the only component that holds IdP
 secrets — the SPA and its service worker never do.
 
@@ -90,6 +90,12 @@ npm run deploy
 ```
 
 CI deploys via `.github/workflows/worker.yml` on changes under `workers/`, using
-the `CLOUDFLARE_API_TOKEN` (account-scoped, *Workers Scripts: Edit*) and
-`CLOUDFLARE_ACCOUNT_ID` Actions secrets. IdP secrets are set once with
-`wrangler secret put` and are never exposed to CI.
+the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` Actions secrets. The
+token must cover the route as well as the script — *Account → Workers Scripts →
+Edit*, *Zone → Workers Routes → Edit*, *Zone → Zone → Read*, which the built-in
+**Edit Cloudflare Workers** template grants. A token holding only the account
+permission uploads the script and then fails to attach the route. IdP secrets
+are set once with `wrangler secret put` and are never exposed to CI.
+
+`npx wrangler tail` streams live request logs, which is the fastest way to see
+why a provider rejected an exchange.
