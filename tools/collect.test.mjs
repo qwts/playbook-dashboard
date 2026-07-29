@@ -1018,8 +1018,8 @@ test('a body is available for diagnosis only behind a flag CI never sets', async
   assert.doesNotMatch(workflow, /COLLECT_DEBUG/u, 'CI must never set the debug flag');
 });
 
-// The safety this issue calls positional-not-enforced. A comment is what the
-// pre-gate lookup already ignored once (#14), so pin it as a check.
+// The safety property this issue calls positional-not-enforced. A comment is
+// what the pre-gate lookup already ignored once (#14), so pin it as a check.
 test('both throwing definitions carry the pre-gate constraint', () => {
   for (const marker of ['async function ghJson', 'export async function countOpenAlerts']) {
     const at = SOURCE.indexOf(marker);
