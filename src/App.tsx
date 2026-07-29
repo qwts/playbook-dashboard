@@ -172,7 +172,7 @@ export function App() {
           <div className="value" data-tone={toneForOpenSecurity(openSecurity)}>
             {openSecurityLabel(openSecurity)}
             {openSecurity.unknown > 0 ? (
-              <span className="muted" style={{ fontSize: '0.9rem', fontWeight: 500 }}>
+              <span className="muted qualifier">
                 {' '}
                 · {openSecurity.unknown} unreadable
               </span>
@@ -183,7 +183,7 @@ export function App() {
           <div className="label">CI failing</div>
           <div className="value">
             {failing}
-            <span className="muted" style={{ fontSize: '0.9rem', fontWeight: 500 }}>
+            <span className="muted qualifier">
               {' '}
               / {missingCi} no CI
             </span>

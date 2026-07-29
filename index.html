@@ -2,18 +2,33 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Nothing on this page loads from another origin, so the policy needs no
+      allowances at all. That is the argument for removing the webfont links
+      rather than allow-listing them: an allowance is a standing permission, and
+      this page now has none to grant.
+
+      `script-src 'self'` with no 'unsafe-inline' and no 'unsafe-eval' is the one
+      control here that keeps working after something upstream in the build
+      pipeline has already gone wrong, and `connect-src 'self'` is what denies an
+      injected beacon anywhere to report to.
+
+      Absent deliberately: `frame-ancestors`. It is ignored when a policy is
+      delivered in a <meta> element, and Pages serves static files with no way to
+      set a response header — writing it here would read as clickjacking
+      protection while providing none. See DESIGN.md.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
     <meta
       name="description"
       content="Redacted fleet status for qwts governed repositories — security posture, properties, and CI."
     />
     <title>Playbook Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
   </head>
   <body>
     <div id="root"></div>
