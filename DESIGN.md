@@ -86,6 +86,19 @@ This last rule generalizes beyond the code that introduced it: any logic
 written while every governed repo was published may be wrong now that some are
 not, whether or not it appears in the diff that introduced withholding.
 
+**A thrown error carries a literal and a status, never a response.** The two
+functions that can end the run — `ghJson` and, historically, `countOpenAlerts` —
+both state at their definition that they must not be called before the
+visibility gate, because `main().catch()` prints what they throw. The message
+uses a label supplied as a constant at the call site rather than the request
+path, so the safety does not depend on which path was requested or on the next
+caller reading the constraint. Request paths and response bodies are available
+only under `COLLECT_DEBUG`, which the Pages workflow has no way to set — the
+collect step passes it nothing but a token. GitHub's error bodies are ordinarily
+harmless, but they cross a boundary the threat model treats as
+attacker-controlled, and this was safe before only by where the callers happened
+to sit.
+
 ## Decision: manifest free text
 
 `note` is **not published**. It was collected and written into the artifact but
