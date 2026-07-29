@@ -51,8 +51,13 @@ jobs:
       - run: npm run ci
       # The deploy credential is account-scoped to Workers Scripts: Edit. It can
       # publish this script and read nothing of the fleet.
+      #
+      # Pinned to the ref, not the event. `workflow_dispatch` accepts any branch,
+      # and this Worker is the sole production auth gate — a dispatch from an
+      # unreviewed branch would publish unreviewed code straight past main's
+      # protection.
       - name: Deploy
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

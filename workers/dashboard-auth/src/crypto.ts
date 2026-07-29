@@ -6,6 +6,17 @@
  * ever placed in a cookie payload.
  */
 
+/**
+ * What a token is *for*, mixed into the signed message.
+ *
+ * Both cookies are signed with the same SESSION_SECRET, so without this a
+ * transaction token — which /auth/login hands to any unauthenticated caller —
+ * verifies perfectly well as a session token. Domain separation lives in the
+ * HMAC rather than only in a claim, so a shape check is the second line of
+ * defence and not the only one.
+ */
+export type TokenPurpose = 'session' | 'oauth_tx';
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -31,7 +42,9 @@ export function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-async function hmacKey(secret: string, usages: Array<'sign' | 'verify'>): Promise<CryptoKey> {
+// Return type left to inference: `CryptoKey` is a type under workerd's types
+// but only a value under node's, and this module is typechecked as both.
+async function hmacKey(secret: string, usages: Array<'sign' | 'verify'>) {
   return crypto.subtle.importKey(
     'raw',
     encoder.encode(secret),
@@ -41,15 +54,23 @@ async function hmacKey(secret: string, usages: Array<'sign' | 'verify'>): Promis
   );
 }
 
-/** Returns `<base64url(json)>.<base64url(hmac)>`. */
-export async function signClaims(secret: string, claims: unknown): Promise<string> {
+/** Returns `<base64url(json)>.<base64url(hmac)>`, signed for one purpose only. */
+export async function signClaims(
+  secret: string,
+  purpose: TokenPurpose,
+  claims: unknown,
+): Promise<string> {
   const payload = bytesToBase64Url(encoder.encode(JSON.stringify(claims)));
   const key = await hmacKey(secret, ['sign']);
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(`${purpose}.${payload}`));
   return `${payload}.${bytesToBase64Url(new Uint8Array(signature))}`;
 }
 
-export async function verifyClaims<T>(secret: string, token: string): Promise<T | null> {
+export async function verifyClaims<T>(
+  secret: string,
+  purpose: TokenPurpose,
+  token: string,
+): Promise<T | null> {
   const separator = token.indexOf('.');
   if (separator <= 0) return null;
 
@@ -69,7 +90,7 @@ export async function verifyClaims<T>(secret: string, token: string): Promise<T 
     'HMAC',
     key,
     signatureBytes as unknown as ArrayBuffer,
-    encoder.encode(payload),
+    encoder.encode(`${purpose}.${payload}`),
   );
   if (!valid) return null;
 

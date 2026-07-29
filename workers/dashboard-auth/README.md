@@ -40,6 +40,10 @@ session.
   the verifier stays in the browser until exchange time.
 - Cookies are signed with HMAC-SHA256, not encrypted. They carry only provider,
   subject, login, and expiry.
+- The session cookie and the transaction cookie share one `SESSION_SECRET`, so
+  each is signed for a purpose that is mixed into the HMAC and the reader
+  validates the full claim shape. Without both, the transaction token handed to
+  any unauthenticated caller by `/auth/login` would verify as a session.
 - Apple's and Google's `id_token`s are read from a direct TLS response to their
   token endpoints; `iss`, `aud`, and `exp` are validated in place of a JWKS
   lookup.

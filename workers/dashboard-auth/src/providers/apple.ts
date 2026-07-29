@@ -6,8 +6,8 @@
  * Identity comes from the `sub` claim of the returned id_token.
  */
 
-import { decodeJwtPayload, signEs256Jwt } from '../crypto';
-import type { Env } from '../env';
+import { decodeJwtPayload, signEs256Jwt } from '../crypto.ts';
+import type { Env } from '../env.ts';
 
 const AUTHORIZE_URL = 'https://appleid.apple.com/auth/authorize';
 const TOKEN_URL = 'https://appleid.apple.com/auth/token';

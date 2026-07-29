@@ -6,16 +6,18 @@
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "ci": "npm run typecheck"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "ci": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "wrangler": "^4.20.0"
   }
