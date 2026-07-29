@@ -504,7 +504,8 @@ export async function fetchRepoForGate(name, failures = []) {
 }
 
 /** Returns the redacted row, or `null` if the repo must not be published. */
-async function collectRepo(entry, failures) {
+/** Exported for the round-trip test: collector output must satisfy the schema. */
+export async function collectRepo(entry, failures) {
   const detail = await fetchRepoForGate(entry.name, failures);
   // Withheld before any alert or CI call: nothing we do not publish is fetched.
   // The name is deliberately not logged — see the summary in main().

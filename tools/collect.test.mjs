@@ -3,6 +3,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { validateSnapshot } from './snapshot-schema.mjs';
 import {
   ALLOWED_URL_ORIGIN,
   MAX_BACKOFF_MS,
@@ -17,6 +18,7 @@ import {
   sanitizeGithubUrl,
   isRateLimited,
   retryDelayMs,
+  collectRepo,
   countOpenAlerts,
   publicationTally,
   degradedReasons,
@@ -912,4 +914,148 @@ test('the tally reaches the snapshot as two fields, never one', () => {
     /withheld:\s*withheld\s*\+\s*unreadable/u,
     'summing them restores the conflation this split exists to undo',
   );
+});
+
+// --- the collector's own output must satisfy the schema it publishes under --
+//
+// The validate step guards the artifact, but in PR CI the only artifact is the
+// committed fixture: nothing ran a *collector-produced* row through
+// `validateSnapshot`, so the exact vector #9 names — a field added to a
+// collector return value — passed PR CI green and was first caught by the
+// hourly cron as a fail-closed publish outage, post-merge. This round-trip
+// moves that discovery to PR time. It is also the test that would have caught
+// the unsanitized workflow name before it needed a review finding.
+
+function githubApiStub(overrides = {}) {
+  const detail = {
+    private: false,
+    visibility: 'public',
+    default_branch: 'main',
+    html_url: 'https://github.com/qwts/example',
+    security_and_analysis: {
+      secret_scanning: { status: 'enabled' },
+      secret_scanning_push_protection: { status: 'enabled' },
+      dependabot_security_updates: { status: 'enabled' },
+    },
+    ...overrides.detail,
+  };
+  const run = {
+    name: 'CI',
+    conclusion: 'success',
+    status: 'completed',
+    updated_at: new Date().toISOString(),
+    html_url: 'https://github.com/qwts/example/actions/runs/1',
+    ...overrides.run,
+  };
+
+  return async (url) => {
+    const path = String(url);
+    if (path.includes('/private-vulnerability-reporting')) {
+      return Response.json({ enabled: true });
+    }
+    if (path.includes('/code-scanning/default-setup')) {
+      return Response.json({ state: 'configured' });
+    }
+    if (path.includes('/rulesets')) {
+      return Response.json([{ enforcement: 'active' }]);
+    }
+    if (path.includes('/alerts?')) {
+      return Response.json([]);
+    }
+    if (path.includes('/actions/runs')) {
+      return Response.json({ workflow_runs: [run] });
+    }
+    // The gate lookup: /repos/{owner}/{name}
+    return Response.json(detail);
+  };
+}
+
+function envelope(row) {
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    source: {
+      account: 'qwts',
+      manifestRepo: 'qwts/playbook-engineering',
+      manifestPath: 'governance/repos.json',
+    },
+    withheld: 0,
+    unreadable: 0,
+    collection: { denied: 0, rateLimited: 0, failed: 0 },
+    repos: [row],
+  };
+}
+
+async function roundTrip(entry, overrides = {}) {
+  const row = await withStubbedFetch(githubApiStub(overrides), () => collectRepo(entry, []));
+  assert.ok(row, 'the gate should have passed — the stub reports a public repo');
+  return validateSnapshot(envelope(row));
+}
+
+test('a collected row satisfies the schema it will be published under', async () => {
+  const violations = await roundTrip({
+    name: 'example',
+    status: 'active',
+    sharedCi: true,
+    publish: true,
+    codexSync: { enabled: false },
+    delta: 'Version-consistency gate in CI.',
+  });
+
+  assert.deepEqual(violations, [], 'collector output failed its own publication contract');
+});
+
+test('a hostile API response still yields a publishable row, not a publish outage', async () => {
+  // Values GitHub could plausibly return that the schema must never see raw:
+  // an over-long workflow name, and URLs that resolve off-origin. The
+  // collector's job is to sanitize at entry; anything reaching the artifact
+  // unsanitized fails validation, which fails the run closed — correct for the
+  // artifact, and exactly why sanitizing has to happen here instead.
+  const violations = await roundTrip(
+    {
+      name: 'example',
+      status: 'onboarding',
+      sharedCi: false,
+      publish: true,
+      delta: '',
+    },
+    {
+      run: {
+        name: `deploy ${'x'.repeat(400)}`,
+        conclusion: null,
+        status: 'in_progress',
+        updated_at: new Date().toISOString(),
+        html_url: 'https://evil.example/qwts/example',
+      },
+      detail: { html_url: 'https://github.com.evil.example/qwts/example' },
+    },
+  );
+
+  assert.deepEqual(violations, [], 'sanitization must happen at collect time, not at validation');
+});
+
+test('a minimal repo — no CI, no scanners — still round-trips clean', async () => {
+  const bare = async (url) => {
+    const path = String(url);
+    if (path.includes('/actions/runs')) return Response.json({ workflow_runs: [] });
+    if (path.includes('/alerts?') || path.includes('/default-setup')) {
+      return new Response('{"message":"not found"}', { status: 404 });
+    }
+    if (path.includes('/private-vulnerability-reporting') || path.includes('/rulesets')) {
+      return new Response('{"message":"forbidden"}', { status: 403 });
+    }
+    return Response.json({
+      private: false,
+      visibility: 'public',
+      default_branch: 'main',
+      html_url: 'https://github.com/qwts/bare',
+    });
+  };
+
+  const row = await withStubbedFetch(bare, () =>
+    collectRepo({ name: 'bare', status: 'onboarding', publish: true }, []),
+  );
+  const violations = validateSnapshot(envelope(row));
+
+  assert.deepEqual(violations, [], 'nulls and unknowns are valid published values');
 });
