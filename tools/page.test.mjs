@@ -50,8 +50,18 @@ function markupOnly(html) {
         i = lt + 6;
         continue;
       }
-      const end = html.indexOf('-->', lt + 4);
-      i = end === -1 ? html.length : end + 3;
+      // Two closers, not one: the parser's comment-end-bang state means `--!>`
+      // ends a comment exactly as `-->` does. A scan that only stops at `-->`
+      // sails past `--!>` to the close of the *next* ordinary comment, and
+      // everything in between — live markup, to the browser — is swallowed.
+      // Same bypass shape as the empty comments above, one state further in.
+      const closers = [
+        [html.indexOf('-->', lt + 4), 3],
+        [html.indexOf('--!>', lt + 4), 4],
+      ].filter(([at]) => at !== -1);
+      if (closers.length === 0) break;
+      const [at, len] = closers.reduce((a, b) => (a[0] <= b[0] ? a : b));
+      i = at + len;
       continue;
     }
     let j = lt + 1;
@@ -136,14 +146,51 @@ test('every directive that matters is stated, not left to fall back', () => {
   }
 });
 
+/**
+ * Whether a URL value can leave this origin, decided by resolving it the way
+ * the browser will — not by pattern-matching the way it was written.
+ *
+ * The `//`-based regex this replaces knew two spellings of "another origin"
+ * and the parser knows more. `https:fonts.googleapis.com/…`, no slashes, is a
+ * valid absolute URL to Chrome served over http, and `data:`/`javascript:`
+ * never contained `//` at all. Enumerating spellings is the losing side of
+ * that game; asking the URL parser where the request actually goes is the
+ * winning one.
+ *
+ * Resolved against two bases, not one, because the parser has a special case
+ * that a single base cannot see around: a special-scheme URL with no slashes
+ * is *relative* when its scheme matches the base's, and an authority when it
+ * does not. `https:evil.example/x` therefore stays same-origin against an
+ * https base and becomes `https://evil.example/x` against an http one — and
+ * which of those the reader gets depends on how the page happens to be
+ * served. A value is same-origin only if it is same-origin both ways; a value
+ * the parser rejects outright is a violation, not a pass.
+ */
+function leavesOrigin(value) {
+  for (const base of ['https://self.invalid/', 'http://self.invalid/']) {
+    let resolved;
+    try {
+      resolved = new URL(value, base);
+    } catch {
+      return true;
+    }
+    if (resolved.origin !== new URL(base).origin) return true;
+  }
+  return false;
+}
+
+/** Every href/src value in the markup, whichever quote style carries it. */
+function urlAttributes(markup) {
+  return [...markup.matchAll(/(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')/giu)].map(
+    (m) => m[1] ?? m[2],
+  );
+}
+
 // The exit criterion — zero requests to non-self origins — verified in a real
 // browser against the built page (four requests, all same-origin, no console
 // output). This is the assertion that keeps it true afterwards.
 test('the page loads nothing from another origin', () => {
-  const external = [...MARKUP.matchAll(/(?:href|src)\s*=\s*"([^"]+)"/gu)]
-    .map((m) => m[1])
-    .filter((value) => /^(?:[a-z][\w+.-]*:)?\/\//iu.test(value));
-
+  const external = urlAttributes(MARKUP).filter(leavesOrigin);
   assert.deepEqual(external, [], 'a resource is loaded from outside this origin');
 });
 
@@ -156,7 +203,7 @@ test('no preconnect or prefetch survives to leak a visit', () => {
 test('the stylesheet pulls in nothing external either', () => {
   const urls = [...CSS.matchAll(/url\(\s*['"]?([^'")]+)/gu)].map((m) => m[1]);
   for (const url of urls) {
-    assert.doesNotMatch(url, /^(?:[a-z][\w+.-]*:)?\/\//iu, `${url} is an external stylesheet asset`);
+    assert.ok(!leavesOrigin(url), `${url} is an external stylesheet asset`);
   }
   assert.doesNotMatch(CSS, /@import/u, '@import can reach another origin without a <link>');
 });
@@ -269,12 +316,40 @@ test('a crafted comment cannot hide a resource from these assertions', () => {
     `<head><!---><link rel="stylesheet" href="${evil}"><!-- ordinary --></head>`,
     // Delimiter reintroduction: stripping the inner match leaves `<!--` behind.
     `<head><!--<!-- --><link rel="stylesheet" href="${evil}">--></head>`,
+    // Comment-end-bang: `--!>` closes the comment too, so the link is live and
+    // the trailing ordinary comment is there to catch a scanner that missed it.
+    `<head><!-- x --!><link rel="stylesheet" href="${evil}"><!-- ordinary --></head>`,
     // A `>` inside an attribute value must not end the tag early.
     `<head><meta content="a > b" /><link rel="stylesheet" href="${evil}"></head>`,
   ];
 
   for (const page of pages) {
     assert.match(markupOnly(page), /fonts\.googleapis\.com/u, `hidden by: ${page}`);
+  }
+});
+
+// Same posture for the origin check itself: spellings that reach another
+// origin without looking like the `https://` the old regex was written for.
+test('an origin bypass in an unusual spelling is still caught', () => {
+  const disguises = [
+    // A special-scheme URL with no slashes at all: `https:host/path` is an
+    // authority — and a live cross-origin request — whenever the page's own
+    // scheme differs, which is not the page's decision to make.
+    '<link rel="stylesheet" href="https:fonts.googleapis.com/css2?family=X">',
+    // Single quotes are as legal as double, and were invisible to a
+    // double-quote-only capture.
+    "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=X'>",
+    '<script src=\'//fonts.gstatic.com/x.js\'></script>',
+  ];
+
+  for (const tag of disguises) {
+    const external = urlAttributes(markupOnly(`<head>${tag}</head>`)).filter(leavesOrigin);
+    assert.notDeepEqual(external, [], `treated as same-origin: ${tag}`);
+  }
+
+  // And the values the page actually uses stay recognized as this origin.
+  for (const honest of ['/src/main.tsx', '/fonts/x.woff2', 'fonts/x.woff2']) {
+    assert.ok(!leavesOrigin(honest), `${honest} is this origin`);
   }
 });
 

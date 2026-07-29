@@ -2,7 +2,7 @@ import react from '@vitejs/plugin-react';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { defineConfig, type ServerOptions } from 'vite';
+import { defineConfig, type Plugin, type ServerOptions } from 'vite';
 
 const DEFAULT_CERTS_DIR = path.join(homedir(), '.quorum', 'certs');
 /** Bind address — browse via local.dev.zts1.com (see README /etc/hosts). */
@@ -35,6 +35,35 @@ function resolveTls(): NonNullable<ServerOptions['https']> {
   };
 }
 
+/**
+ * Dev and build deliberately diverge on the Content-Security-Policy meta.
+ *
+ * The policy lives in index.html so the built page carries it with no build
+ * step to forget, and so tools/page.test.mjs can assert it against the source
+ * of truth. But Vite's dev pipeline serves every imported stylesheet as an
+ * inline <style> element injected by the module runner, and HMR keeps editing
+ * those elements in place. `style-src 'self'` — the directive doing real work
+ * in production — blocks all of it: the dev page renders unstyled and CSS
+ * hot-reload dies silently.
+ *
+ * Loosening the policy for dev (an 'unsafe-inline' allowance behind a flag)
+ * would put an escape hatch one copy-paste away from the shipped page, which
+ * is the failure mode this repo exists to avoid. Stripping the meta from the
+ * served transform only — `apply: 'serve'` never runs during `vite build` —
+ * keeps the shipped policy byte-identical to what the tests read, at the cost
+ * of dev not exercising the CSP. The built page is what `npm run preview`
+ * and the browser verification in page.test.mjs are for.
+ */
+function servedWithoutPolicy(): Plugin {
+  return {
+    name: 'strip-csp-meta-in-dev',
+    apply: 'serve',
+    transformIndexHtml(html) {
+      return html.replace(/[ \t]*<meta\s+http-equiv="Content-Security-Policy"[\s\S]*?\/>\n?/u, '');
+    },
+  };
+}
+
 function listenOptions(withTls: boolean) {
   return {
     host: process.env.DASHBOARD_DEV_BIND || DEFAULT_BIND,
@@ -49,7 +78,7 @@ export default defineConfig(({ command }) => {
 
   return {
     base: process.env.VITE_BASE || '/',
-    plugins: [react()],
+    plugins: [react(), servedWithoutPolicy()],
     server: listenOptions(localTls),
     preview: listenOptions(localTls),
   };
