@@ -20,7 +20,12 @@
  * material, or private vulnerability report bodies.
  */
 
-import { ALLOWED_URL_ORIGIN, MAX_DELTA_LENGTH, sanitizeGithubUrl } from './collect.mjs';
+import {
+  ALLOWED_URL_ORIGIN,
+  MAX_DELTA_LENGTH,
+  MAX_WORKFLOW_NAME_LENGTH,
+  sanitizeGithubUrl,
+} from './collect.mjs';
 
 /** Matches `isSnapshotStale` in src/lib/aggregate.ts. */
 export const STALE_MS = 24 * 60 * 60 * 1000;
@@ -30,8 +35,8 @@ export const STALE_MS = 24 * 60 * 60 * 1000;
  *
  * The manifest is untrusted input and so is a cached snapshot, so unbounded
  * free text reaching a public page is a blast radius worth bounding regardless
- * of who authored it. `delta` shares its cap with the collector's own check
- * rather than restating it.
+ * of who authored it. `delta` and `workflowName` share their caps with the
+ * collector's own checks rather than restating them.
  */
 export const CAPS = {
   account: 39,
@@ -40,7 +45,7 @@ export const CAPS = {
   name: 100,
   delta: MAX_DELTA_LENGTH,
   visibility: 32,
-  workflowName: 128,
+  workflowName: MAX_WORKFLOW_NAME_LENGTH,
   conclusion: 32,
   status: 32,
 };
@@ -88,11 +93,22 @@ const isUrl = (value) => {
   return null;
 };
 
-const isTimestamp = (value) => {
+/** Honest clock drift between GitHub's runners and whoever validates next. */
+const CLOCK_SKEW_MS = 60_000;
+
+/**
+ * Every timestamp, not just `generatedAt`, is refused a future value. A future
+ * `ci.updatedAt` reads as maximally current for as long as the skew lasts —
+ * the same direction that suppresses the staleness warning, one field down.
+ * `now` arrives through the rule context so there is exactly one clock per
+ * validation, not a `Date.now()` in every rule that needs one.
+ */
+const isTimestamp = (value, { now }) => {
   if (value === null) return null;
   if (typeof value !== 'string') return 'must be a string';
   const ts = Date.parse(value);
   if (!Number.isFinite(ts)) return 'is not a parseable timestamp';
+  if (ts > now + CLOCK_SKEW_MS) return 'is in the future';
   return null;
 };
 
@@ -139,8 +155,8 @@ const REPO = {
 
 export const SNAPSHOT = {
   schemaVersion: (value) => (value === 1 ? null : 'must be exactly 1'),
-  generatedAt: (value) =>
-    typeof value === 'string' ? isTimestamp(value) : 'must be a timestamp string',
+  generatedAt: (value, ctx) =>
+    typeof value === 'string' ? isTimestamp(value, ctx) : 'must be a timestamp string',
   source: {
     account: isText(CAPS.account),
     manifestRepo: isText(CAPS.manifestRepo),
@@ -158,7 +174,7 @@ export const SNAPSHOT = {
 
 // --- walking -------------------------------------------------------------
 
-function checkShape(value, shape, path, violations) {
+function checkShape(value, shape, path, violations, ctx) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     violations.push(`${path} must be an object`);
     return;
@@ -166,21 +182,27 @@ function checkShape(value, shape, path, violations) {
 
   // The whole point. Anything not named in the contract is a field nobody
   // decided to publish, and it is rejected before its contents are considered.
+  //
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a field
+  // named `toString` or `constructor` — an ordinary own key under JSON.parse —
+  // would match `Object.prototype`, pass the closed-key-set check, and ship
+  // with its value never validated. Prototype-named keys are exactly the ones
+  // an attacker reaches for.
   for (const key of Object.keys(value)) {
-    if (!(key in shape)) violations.push(`${path}.${key} is not in the published schema`);
+    if (!Object.hasOwn(shape, key)) violations.push(`${path}.${key} is not in the published schema`);
   }
 
   for (const [key, rule] of Object.entries(shape)) {
     if (rule === null) continue;
-    if (!(key in value)) {
+    if (!Object.hasOwn(value, key)) {
       violations.push(`${path}.${key} is missing`);
       continue;
     }
     if (typeof rule === 'function') {
-      const reason = rule(value[key]);
+      const reason = rule(value[key], ctx);
       if (reason) violations.push(`${path}.${key} ${reason}`);
     } else {
-      checkShape(value[key], rule, `${path}.${key}`, violations);
+      checkShape(value[key], rule, `${path}.${key}`, violations, ctx);
     }
   }
 }
@@ -198,13 +220,17 @@ function checkShape(value, shape, path, violations) {
  */
 export function validateSnapshot(snapshot, { now = Date.now(), requireFresh = false } = {}) {
   const violations = [];
-  checkShape(snapshot, SNAPSHOT, 'snapshot', violations);
+  // One clock for the whole validation. The future check lives in
+  // `isTimestamp` — every timestamp field gets it through this context —
+  // so this function only owns the check that needs the flag: staleness.
+  const ctx = { now };
+  checkShape(snapshot, SNAPSHOT, 'snapshot', violations, ctx);
 
   if (!Array.isArray(snapshot?.repos)) {
     violations.push('snapshot.repos must be an array');
   } else {
     snapshot.repos.forEach((repo, index) => {
-      checkShape(repo, REPO, `snapshot.repos[${index}]`, violations);
+      checkShape(repo, REPO, `snapshot.repos[${index}]`, violations, ctx);
     });
 
     const names = snapshot.repos.map((repo) => repo?.name);
@@ -214,14 +240,8 @@ export function validateSnapshot(snapshot, { now = Date.now(), requireFresh = fa
   }
 
   const ts = Date.parse(snapshot?.generatedAt);
-  if (Number.isFinite(ts)) {
-    // A future timestamp is never valid, fresh run or not: it makes a stale
-    // artifact read as current for as long as the clock skew lasts, which is
-    // the one direction that suppresses the staleness warning.
-    if (ts > now + 60_000) violations.push('snapshot.generatedAt is in the future');
-    if (requireFresh && now - ts > STALE_MS) {
-      violations.push('snapshot.generatedAt is older than the staleness threshold');
-    }
+  if (Number.isFinite(ts) && requireFresh && now - ts > STALE_MS) {
+    violations.push('snapshot.generatedAt is older than the staleness threshold');
   }
 
   return violations;

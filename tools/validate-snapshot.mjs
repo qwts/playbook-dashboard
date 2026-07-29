@@ -36,9 +36,16 @@ function main(argv) {
   try {
     snapshot = JSON.parse(readFileSync(target, 'utf8'));
   } catch (error) {
-    // The path and the parser's complaint, never the file's contents.
-    process.stderr.write(`snapshot at ${target} could not be read as JSON\n`);
-    process.stderr.write(`${error instanceof Error ? error.message : 'unknown error'}\n`);
+    // The path and a fixed complaint, never `error.message`: V8's SyntaxError
+    // embeds a snippet of the input — exactly the bytes this branch exists to
+    // keep out of a public log. The error's name and the parse position are
+    // the only fragments not derived from the file's contents.
+    const name = error instanceof Error ? error.name : 'unknown error';
+    const position = error instanceof SyntaxError ? /at position (\d+)/u.exec(error.message)?.[1] : undefined;
+    process.stderr.write(
+      `snapshot at ${target} could not be read as JSON ` +
+        `(${name}${position === undefined ? '' : ` at position ${position}`})\n`,
+    );
     return 1;
   }
 

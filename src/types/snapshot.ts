@@ -19,15 +19,18 @@ export type Snapshot = {
    */
   withheld: number | null;
   /**
-   * Governed repos whose publication gate could not be evaluated at all — the
-   * lookup was denied, rate-limited, or timed out. A count only, never which.
+   * Governed repos whose publication gate could not be evaluated at all — any
+   * failed gate lookup lands here: denied, rate-limited, timed out, a 404 for
+   * a repo deleted or renamed out from under the manifest, or a response body
+   * that would not parse. A count only, never which.
    *
    * Separate from `withheld` because they are different claims. `withheld` says
    * the collector *decided* not to publish, which is a statement about a fleet
-   * under deliberate control. This says it could not tell, which is transient
-   * and will likely resolve next run. Folding the second into the first makes a
-   * rate limit read as curation — the same defect as a denied count rendering
-   * as a green zero, one level up.
+   * under deliberate control. This says it could not tell — and no promise is
+   * made about why: a rate limit clears next run, a deleted repo stays
+   * unreadable until the manifest catches up. Folding the second into the
+   * first makes a failure read as curation — the same defect as a denied count
+   * rendering as a green zero, one level up.
    *
    * `null` when the snapshot cannot state it, for the same reason as `withheld`.
    */

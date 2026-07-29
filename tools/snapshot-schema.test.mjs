@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { CAPS, STALE_MS, validateSnapshot } from './snapshot-schema.mjs';
+import { main as validateMain } from './validate-snapshot.mjs';
 
 const FIXTURE = JSON.parse(
   readFileSync(new URL('../public/data/snapshot.json', import.meta.url), 'utf8'),
@@ -87,6 +90,34 @@ test('a field nobody decided to publish is rejected, at every level', () => {
     assert.ok(
       violations.some((v) => v.startsWith(`${expected} is not in the published schema`)),
       `${expected} should have been rejected, got: ${JSON.stringify(violations)}`,
+    );
+  }
+});
+
+// `in` walks the prototype chain, so before Object.hasOwn a field named after
+// an Object.prototype member — an ordinary own key once JSON.parse has run —
+// matched the inherited property, passed the closed-key-set check, and shipped
+// with its value never validated. Prototype-named keys are exactly the ones an
+// attacker reaches for.
+test('a key named after an Object.prototype member is rejected, not inherited past', () => {
+  // Injected via JSON, as the real artifact would carry it: an object literal
+  // with a `__proto__` key sets the prototype instead of creating an own key.
+  const inject = (json, key) => `${json.slice(0, -1)},${JSON.stringify(key)}:true}`;
+
+  for (const key of ['toString', 'valueOf', 'constructor', '__proto__', 'hasOwnProperty']) {
+    const top = JSON.parse(inject(JSON.stringify(valid()), key));
+    assert.ok(
+      validateSnapshot(top).some((v) => v.startsWith(`snapshot.${key} is not in the published schema`)),
+      `top-level ${key} should have been rejected`,
+    );
+
+    const nested = valid();
+    nested.repos = [JSON.parse(inject(JSON.stringify(repo()), key))];
+    assert.ok(
+      validateSnapshot(nested).some((v) =>
+        v.startsWith(`snapshot.repos[0].${key} is not in the published schema`),
+      ),
+      `repo-level ${key} should have been rejected`,
     );
   }
 });
@@ -180,6 +211,31 @@ test('a timestamp in the future is refused however fresh it looks', () => {
   // A future timestamp makes a stale artifact read as current for as long as
   // the skew lasts — the one direction that suppresses the staleness warning.
   assert.ok(violations.includes('snapshot.generatedAt is in the future'));
+  assert.equal(
+    violations.filter((v) => v.startsWith('snapshot.generatedAt')).length,
+    1,
+    'one violation per field — the shape walk and the freshness block must not both report it',
+  );
+});
+
+// DESIGN.md says timestamps, plural. `generatedAt` was the only one checked;
+// a future `ci.updatedAt` passed and read as maximally current CI — the same
+// suppression, one field down.
+test('every timestamp field refuses the future, not just generatedAt', () => {
+  const now = Date.now();
+  const future = new Date(now + 60 * 60 * 1000).toISOString();
+  const violations = validateSnapshot(
+    valid({ repos: [repo({ ci: { ...repo().ci, updatedAt: future } })] }),
+    { now },
+  );
+  assert.ok(violations.includes('snapshot.repos[0].ci.updatedAt is in the future'));
+
+  // Inside the skew allowance is not "the future" — clocks drift.
+  const nearby = new Date(now + 30_000).toISOString();
+  assert.deepEqual(
+    validateSnapshot(valid({ repos: [repo({ ci: { ...repo().ci, updatedAt: nearby } })] }), { now }),
+    [],
+  );
 });
 
 test('an unparseable timestamp never passes', () => {
@@ -235,6 +291,34 @@ test('no violation message quotes the offending value', () => {
   for (const violation of violations) {
     assert.doesNotMatch(violation, /livetokenmarker9271/u, `a value reached a message: ${violation}`);
   }
+});
+
+// The same rule one layer down: a snapshot that is not even JSON. V8's
+// SyntaxError message embeds a snippet of the input, so printing
+// `error.message` republishes the bytes the gate exists to keep out of a
+// public log.
+test('a parse failure never echoes the file contents either', () => {
+  const secret = 'ghp_livetokenmarker9271';
+  const file = join(tmpdir(), `bad-snapshot-${process.pid}.json`);
+  // Invalid JSON, with the marker at the point the parser will complain about.
+  writeFileSync(file, `{"generatedAt": ${secret}}`);
+
+  const written = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  try {
+    assert.equal(validateMain([file]), 1, 'an unparseable snapshot must refuse to publish');
+  } finally {
+    process.stderr.write = realWrite;
+    rmSync(file, { force: true });
+  }
+
+  const output = written.join('');
+  assert.doesNotMatch(output, /livetokenmarker9271/u, `file contents reached stderr: ${output}`);
+  assert.match(output, /could not be read as JSON/u, 'the fixed complaint must still explain itself');
 });
 
 test('the committed fallback fixture upholds the contract it will be published under', () => {

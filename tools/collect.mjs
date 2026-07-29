@@ -35,6 +35,14 @@ const API = 'https://api.github.com';
 /** Longest manifest `delta` string that may reach the published page. */
 export const MAX_DELTA_LENGTH = 200;
 
+/**
+ * Longest workflow name that may reach the published page. The schema's
+ * `CAPS.workflowName` imports this — the same direction `delta`'s cap already
+ * flows, schema importing collector — so there is one number and the schema
+ * cannot drift from the truncation applied at collect time.
+ */
+export const MAX_WORKFLOW_NAME_LENGTH = 128;
+
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
 function warn(message) {
@@ -310,6 +318,24 @@ async function fetchSecurityFloor(repo, detail) {
   };
 }
 
+/**
+ * GitHub-authored free text crossing into the artifact the fail-closed gate
+ * inspects. The schema rejects a snapshot whose workflow name exceeds the cap
+ * or carries a control character — correctly, but validation runs fleet-wide:
+ * left unsanitized, one repo's overlong or newline-bearing workflow name would
+ * block publication for every repo in the fleet.
+ *
+ * Unlike `delta` this truncates rather than drops. A delta is authored copy
+ * where a half-sentence misleads; a workflow name is a label, and a clipped
+ * label still identifies the workflow where an absent one renders as no CI.
+ */
+export function sanitizeWorkflowName(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  const cleaned = value.replace(new RegExp(CONTROL_CHARS.source, 'gu'), '');
+  if (cleaned === '') return null;
+  return cleaned.slice(0, MAX_WORKFLOW_NAME_LENGTH);
+}
+
 async function fetchCi(repo, defaultBranch) {
   // Reads through `gh`, not `ghJson`. Dropping Actions: Read returns 403, and
   // `ghJson` throws on it — killing the whole collection over one repo's CI
@@ -330,7 +356,7 @@ async function fetchCi(repo, defaultBranch) {
     };
   }
   return {
-    workflowName: run.name ?? null,
+    workflowName: sanitizeWorkflowName(run.name),
     conclusion: run.conclusion ?? null,
     status: run.status ?? null,
     updatedAt: run.updated_at ?? null,
@@ -585,10 +611,14 @@ async function main() {
   //
   // The run still fails (see pages.yml) so the blank is noticed, not just served.
   if (repos.length === 0) {
+    // The breakdown must include the failure bucket: when emptiness is caused
+    // by gate failures, `notOptedIn` and `notObservedPublic` are both zero and
+    // a message listing only decisions would explain nothing.
     warn(
       `WARNING: no repos passed the publication gates — publishing an empty snapshot. ` +
         `${governed.length} governed, ${notOptedIn} without publish: true, ` +
-        `${notObservedPublic} not observed public.`,
+        `${notObservedPublic} not observed public` +
+        (unreadable > 0 ? `, and ${unreadable} could not be read at all.` : '.'),
     );
   }
 
@@ -695,8 +725,10 @@ const FLOOR_FLAG_FOR_COUNT = {
  * good one: green check, published page, question marks nobody was told about.
  *
  * Two sources, and they overlap on purpose. The artifact is what gets
- * published: a 404 yields a `null` count without touching a counter, so only
- * the snapshot knows whether the page will show a `?`. The health counters see
+ * published: a 404 yields a `null` count without touching a counter, and a
+ * gate lookup that 404s or returns an unparseable body reaches `unreadable`
+ * without touching one either — so only the snapshot knows what the page will
+ * show, a `?` or a repo the run could not evaluate at all. The health counters see
  * what the artifact cannot: a denied or rate-limited read against a repo the
  * gates then withheld leaves no trace in `repos` at all. Including both means
  * a denied posture read on a published repo is reported twice — once as
@@ -725,6 +757,17 @@ export function degradedReasons(snapshot) {
   if (health.denied > 0) reasons.push(`${health.denied} denied`);
   if (health.rateLimited > 0) reasons.push(`${health.rateLimited} rate-limited`);
   if (health.failed > 0) reasons.push(`${health.failed} failed or timed out`);
+
+  // The path the counters cannot see. A deleted repo left in the manifest with
+  // `publish: true` 404s at the gate: no counter moves, no row publishes, and
+  // without this check the run stays green while the page reports a repo it
+  // could not evaluate. The snapshot is the only place that failure survives.
+  // Guarded like every count read back out of an artifact: anything that is
+  // not a sane count is not evidence of degradation.
+  const unreadable = snapshot?.unreadable;
+  if (Number.isInteger(unreadable) && unreadable > 0) {
+    reasons.push(`${unreadable} repos unreadable at the gate`);
+  }
 
   let unknown = 0;
   for (const repo of snapshot?.repos ?? []) {

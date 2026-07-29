@@ -7,6 +7,7 @@ import {
   countCiFailing,
   countMissingCi,
   formatRelative,
+  governedCount,
   isSnapshotStale,
   openSecurityLabel,
   sumOpenSecurity,
@@ -127,10 +128,11 @@ export function App() {
   const missingCi = countMissingCi(repos);
   const withheld = withheldCount(state.snapshot);
   const unreadable = unreadableCount(state.snapshot);
-  // Deliberately not summed with `withheld`. They are different claims, and the
-  // denominator needs both, but the reader needs them apart.
-  const governed =
-    withheld === null || unreadable === null ? null : repos.length + withheld + unreadable;
+  // Derived from the unfiltered snapshot, not from `repos`: a row the frontend
+  // backstop drops must widen the gap between published and governed, not
+  // shrink both sides in step and vanish. `withheld` and `unreadable` stay
+  // separate pills — the denominator needs both, the reader needs them apart.
+  const governed = governedCount(state.snapshot);
 
   return (
     <div className="app">
@@ -151,7 +153,7 @@ export function App() {
           <span
             className="pill"
             data-tone={governed === null || unreadable ? 'warn' : withheld ? 'warn' : 'ok'}
-            title="Governed repos are those the manifest lists as not retired. Withheld repos were deliberately not published and publish no name, counts, or posture. Unreadable repos are ones the collector could not evaluate at all — a transient failure, not a decision."
+            title="Governed repos are those the manifest lists as not retired. Withheld repos were deliberately not published and publish no name, counts, or posture. Unreadable repos are ones whose gate lookup failed — denied, rate-limited, timed out, or a 404 for a repo deleted or renamed since the manifest was written. A failure, not a decision."
           >
             published {repos.length} of {governed ?? '?'} governed
             {withheld ? ` · ${withheld} withheld` : ''}

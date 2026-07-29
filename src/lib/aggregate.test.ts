@@ -9,6 +9,7 @@ import {
   countCiFailing,
   countMissingCi,
   formatRelative,
+  governedCount,
   isSnapshotStale,
   openSecurityLabel,
   sumOpenSecurity,
@@ -301,6 +302,40 @@ test('an absent or nonsensical unreadable count reads as unknown, not zero', () 
   for (const value of [undefined, null, -1, 1.5, Number.NaN, '2', {}]) {
     const bad = { ...snapshot([repo()]), unreadable: value as number };
     assert.equal(unreadableCount(bad), null, `unreadable ${JSON.stringify(value)} is unknown`);
+  }
+});
+
+test('the governed denominator counts every row the snapshot carries', () => {
+  const snap = snapshot([repo()], 2, 1);
+  assert.equal(governedCount(snap), 4);
+});
+
+// The backstop firing must leave evidence. Deriving the denominator from
+// `visibleRepos` shrank both sides of "published X of Y governed" in step, so
+// a row dropped at render time vanished instead of reading as a discrepancy.
+test('a row dropped by the frontend backstop widens the gap instead of vanishing', () => {
+  const snap = snapshot(
+    [repo({ name: 'clean' }), repo({ name: 'leaked', visibility: 'private' })],
+    0,
+    0,
+  );
+
+  const published = visibleRepos(snap).length;
+  const governed = governedCount(snap);
+  assert.equal(published, 1, 'the backstop must drop the non-public row');
+  assert.equal(governed, 2, 'the denominator must still count it');
+  assert.ok(governed !== null && published < governed, 'the gap is the signal');
+});
+
+test('an unknown withheld or unreadable count makes the denominator unknown', () => {
+  for (const [withheld, unreadable] of [
+    [null, 0],
+    [0, null],
+    [-1, 0],
+    [0, 1.5],
+  ]) {
+    const snap = { ...snapshot([repo()]), withheld, unreadable } as Snapshot;
+    assert.equal(governedCount(snap), null, `withheld ${withheld}, unreadable ${unreadable}`);
   }
 });
 

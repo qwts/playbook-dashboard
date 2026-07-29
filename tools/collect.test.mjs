@@ -7,6 +7,8 @@ import {
   ALLOWED_URL_ORIGIN,
   MAX_BACKOFF_MS,
   MAX_DELTA_LENGTH,
+  MAX_WORKFLOW_NAME_LENGTH,
+  sanitizeWorkflowName,
   fetchRepoForGate,
   isObservedPublic,
   isPublishable,
@@ -245,6 +247,35 @@ test('a missing or non-string delta becomes an empty string', () => {
   for (const value of [undefined, null, 42, {}, [], true]) {
     assert.equal(sanitizeDelta(value, 'example'), '');
   }
+});
+
+// The schema rejects an over-cap or control-charactered workflow name — but it
+// rejects the whole snapshot, fleet-wide. Sanitizing at collect time keeps one
+// repo's hostile workflow name from blocking every other repo's publication.
+test('a workflow name is truncated to the published cap, not shipped raw', () => {
+  const long = 'w'.repeat(MAX_WORKFLOW_NAME_LENGTH + 40);
+  assert.equal(sanitizeWorkflowName(long), 'w'.repeat(MAX_WORKFLOW_NAME_LENGTH));
+  assert.equal(sanitizeWorkflowName('CI'), 'CI');
+});
+
+test('control characters are stripped from a workflow name, not published', () => {
+  assert.equal(sanitizeWorkflowName('release\nnotes'), 'releasenotes');
+  assert.equal(sanitizeWorkflowName('esc\u001b[31mCI'), 'esc[31mCI');
+  assert.equal(sanitizeWorkflowName('\u0000\u007f'), null, 'nothing left is null, not an empty string');
+});
+
+test('a missing or non-string workflow name is null, matching the schema', () => {
+  for (const value of [undefined, null, 42, {}, [], true, '']) {
+    assert.equal(sanitizeWorkflowName(value), null);
+  }
+});
+
+test('fetchCi routes the run name through the sanitizer', () => {
+  // Source assertion for the wiring; the behaviour is tested above. An
+  // unsanitized `run.name` here is exactly the fleet-wide publication block.
+  const ci = SOURCE.slice(SOURCE.indexOf('async function fetchCi'), SOURCE.indexOf('export function parseCodexSync'));
+  assert.match(ci, /workflowName: sanitizeWorkflowName\(run\.name\)/u);
+  assert.doesNotMatch(ci, /workflowName: run\.name/u);
 });
 
 // A source assertion rather than a behavioural one: main() does network I/O, so
@@ -635,6 +666,26 @@ test('an unreadable posture field is degradation even when no counter moved', ()
     snap({ repos: [healthyRepo({ security: { dependabotOpen: null, codeScanningOpen: 0, secretScanningOpen: 0 } })] }),
   );
   assert.deepEqual(reasons, ['1 posture fields unreadable']);
+});
+
+// The gate-failure paths the counters miss entirely. A deleted repo left in
+// the manifest with `publish: true` 404s at the gate: no health counter moves,
+// no row publishes, `unreadable` becomes 1 — and before this check the run
+// stayed green while the page reported a repo it could not evaluate.
+test('a repo unreadable at the gate reddens the run even with clean counters', () => {
+  const reasons = degradedReasons(snap({ unreadable: 1, repos: [healthyRepo()] }));
+  assert.deepEqual(reasons, ['1 repos unreadable at the gate']);
+});
+
+test('a malformed unreadable count from an untrusted snapshot is not degradation evidence', () => {
+  for (const bad of [null, undefined, -1, 1.5, Number.NaN, '2', {}, [], true]) {
+    assert.deepEqual(
+      degradedReasons(snap({ unreadable: bad, repos: [healthyRepo()] })),
+      [],
+      `unreadable ${JSON.stringify(bad)} is not a sane count`,
+    );
+  }
+  assert.deepEqual(degradedReasons(snap({ unreadable: 0, repos: [healthyRepo()] })), []);
 });
 
 test('an unreadable floor boolean counts the same as an unreadable count', () => {
