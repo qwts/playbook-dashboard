@@ -18,6 +18,7 @@ import {
   countOpenAlerts,
   degradedReasons,
   reportDegradation,
+  loadManifest,
   collectionHealth,
   resetCollectionHealth,
   resetRateLimitWindow,
@@ -791,4 +792,102 @@ test('a reason cannot forge a second output line', () => {
 test('outside Actions it writes nothing at all', () => {
   assert.doesNotThrow(() => reportDegradation(['1 denied'], undefined));
   assert.doesNotThrow(() => reportDegradation(['1 denied'], ''));
+});
+
+// --- response bodies must not reach a public Actions log (#23) ------------
+//
+// `main().catch()` prints what is thrown, and Actions logs on a public
+// repository are public. GitHub's error bodies are ordinarily
+// {"message", "documentation_url"}, but they cross a boundary the threat model
+// treats as attacker-controlled, and copying them verbatim into a public log is
+// the GHSA-2qv8 class.
+
+const HOSTILE_BODY = JSON.stringify({
+  message: 'Bad credentials for CVE-2031-0001 in src/secrets/prod.key',
+  documentation_url: 'https://evil.example/exfil?q=leak-marker-9271',
+});
+
+async function manifestError(status, { debug = false } = {}) {
+  const realDebug = process.env.COLLECT_DEBUG;
+  if (debug) process.env.COLLECT_DEBUG = '1';
+  else delete process.env.COLLECT_DEBUG;
+  try {
+    return await withStubbedFetch(
+      async () => new Response(HOSTILE_BODY, { status }),
+      async () => {
+        try {
+          await loadManifest();
+          return null;
+        } catch (error) {
+          return error;
+        }
+      },
+    );
+  } finally {
+    if (realDebug === undefined) delete process.env.COLLECT_DEBUG;
+    else process.env.COLLECT_DEBUG = realDebug;
+  }
+}
+
+test('a failed manifest read reports its status and nothing from the response', async () => {
+  const error = await manifestError(403);
+
+  assert.ok(error instanceof Error, 'the manifest read must still be fatal');
+  assert.match(error.message, /403/u, 'the status is what a maintainer acts on');
+  assert.doesNotMatch(error.message, /leak-marker-9271/u, 'no response body');
+  assert.doesNotMatch(error.message, /CVE-2031-0001/u, 'no response body');
+  assert.doesNotMatch(error.message, /prod\.key/u, 'no response body');
+  assert.doesNotMatch(error.message, /documentation_url/u, 'no response body');
+  assert.doesNotMatch(error.message, /\/repos\//u, 'no request path');
+});
+
+test('the failure still says which read failed, from a literal at the call site', () => {
+  // The label is a constant in the caller, not the path, so the safety holds
+  // however the path was built and whoever builds it next.
+  assert.match(SOURCE, /label: 'governance manifest read'/u);
+});
+
+test('every status that is not 404 keeps the body out', async () => {
+  for (const status of [401, 403, 429, 500, 503]) {
+    const error = await manifestError(status);
+    assert.ok(error instanceof Error, `HTTP ${status} should be fatal for the manifest`);
+    assert.doesNotMatch(error.message, /leak-marker-9271/u, `HTTP ${status} leaked the body`);
+  }
+});
+
+test('a body is available for diagnosis only behind a flag CI never sets', async () => {
+  const error = await manifestError(403, { debug: true });
+
+  assert.match(error.message, /leak-marker-9271/u, 'the flag has to actually do something');
+  // And the workflow must not be able to set it: the collect step passes only
+  // GITHUB_TOKEN, so there is nothing in CI to turn this on with.
+  const workflow = readFileSync(new URL('../.github/workflows/pages.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /COLLECT_DEBUG/u, 'CI must never set the debug flag');
+});
+
+// The safety this issue calls positional-not-enforced. A comment is what the
+// pre-gate lookup already ignored once (#14), so pin it as a check.
+test('both throwing definitions carry the pre-gate constraint', () => {
+  for (const marker of ['async function ghJson', 'export async function countOpenAlerts']) {
+    const at = SOURCE.indexOf(marker);
+    assert.ok(at > 0, `${marker} went missing`);
+    const doc = SOURCE.slice(Math.max(0, at - 1400), at);
+    assert.match(
+      doc,
+      /Never call this before the visibility gate/u,
+      `${marker} must state the constraint where the next caller will read it`,
+    );
+  }
+});
+
+test('the pre-gate lookup is still the only thing that runs before the gate', () => {
+  // fetchRepoForGate returns bare statuses rather than throwing. If it ever
+  // reaches ghJson again, the leak returns whatever ghJson's message says.
+  const gate = SOURCE.slice(
+    SOURCE.indexOf('export async function fetchRepoForGate'),
+    SOURCE.indexOf('async function collectRepo'),
+  );
+  assert.ok(gate.length > 0, 'fetchRepoForGate went missing');
+  assert.doesNotMatch(gate, /ghJson\(/u, 'the pre-gate lookup must not throw');
+  assert.doesNotMatch(gate, /response\.text\(\)/u, 'the pre-gate lookup must not read a body');
 });
