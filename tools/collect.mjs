@@ -212,17 +212,61 @@ async function gh(pathname, { token: auth, accept } = {}) {
   throw lastError ?? new Error(`exhausted ${MAX_ATTEMPTS} attempts without returning`);
 }
 
-async function ghJson(pathname, options) {
+/**
+ * Set any non-empty value to put the request path and response body into
+ * failures. Never set in CI, and there is nothing to set it from: the Pages
+ * workflow passes only `GITHUB_TOKEN` into the collect step.
+ */
+function debugFailures() {
+  return Boolean(process.env.COLLECT_DEBUG);
+}
+
+/**
+ * JSON read whose failure is fatal to the run.
+ *
+ * **Never call this before the visibility gate.** It throws, and `main().catch()`
+ * prints what it throws into an Actions log that is public on this repository —
+ * so a pre-gate failure would name the repository the gate was about to
+ * withhold. `fetchRepoForGate` exists for that side of the line and returns bare
+ * statuses instead of throwing. This is not a hypothetical ordering: the
+ * pre-gate lookup went through this function until review caught it (#14).
+ *
+ * The message therefore carries a caller-supplied literal and a status, and
+ * nothing derived from the response. GitHub's error bodies are ordinarily
+ * `{"message", "documentation_url"}`, but they cross a boundary the threat
+ * model treats as attacker-controlled, and copying them verbatim into a public
+ * log is the GHSA-2qv8 class. `label` is a constant at the call site rather
+ * than the path, so the safety does not depend on which path was requested.
+ */
+async function ghJson(pathname, { label = 'request', ...options } = {}) {
   const response = await gh(pathname, options);
   if (response.status === 404) return null;
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`${pathname} → ${response.status}: ${body.slice(0, 200)}`);
+    const detail = debugFailures() ? ` ${pathname}: ${(await response.text()).slice(0, 200)}` : '';
+    throw new Error(`${label} failed → ${response.status}${detail}`);
   }
   if (response.status === 204) return null;
-  return response.json();
+  // The OK path can leak too: V8's JSON SyntaxError quotes a snippet of the
+  // input it choked on, so an unguarded `.json()` on a garbled 200 puts body
+  // bytes into the throw — the same route to a public log as the not-ok
+  // branch, just dressed as a parse error. Same rule: the label, nothing
+  // derived from the response.
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`${label} returned unparseable JSON`);
+  }
 }
 
+/**
+ * Open alert count for one repository.
+ *
+ * **Never call this before the visibility gate.** `repo` is interpolated into
+ * three request paths, so any failure that named the path would name a repo the
+ * gate may be about to withhold. Nothing here throws or logs for exactly that
+ * reason: an unsuccessful read returns `null`, which the page renders as `?`
+ * and `collectionHealth()` explains in aggregate.
+ */
 export async function countOpenAlerts(repo, kind) {
   const paths = {
     dependabot: `/repos/${ACCOUNT}/${repo}/dependabot/alerts?state=open&per_page=1`,
@@ -252,8 +296,11 @@ export async function countOpenAlerts(repo, kind) {
   const last = [...link.matchAll(/[?&]page=(\d+)>;\s*rel="last"/g)].pop();
   if (last) return Number(last[1]);
 
-  const rows = await response.json();
-  return Array.isArray(rows) ? rows.length : 0;
+  // `.json()` was the one path left that could throw: V8's parse error quotes
+  // the body it choked on. A garbled body is an unknown count — null, not 0,
+  // so it renders `?` rather than a green zero nobody questions.
+  const rows = await response.json().catch(() => null);
+  return Array.isArray(rows) ? rows.length : null;
 }
 
 async function fetchSecurityFloor(repo, detail) {
@@ -266,8 +313,12 @@ async function fetchSecurityFloor(repo, detail) {
   let privateVulnerabilityReporting = null;
   const pvr = await gh(`/repos/${ACCOUNT}/${repo}/private-vulnerability-reporting`);
   if (pvr.ok) {
-    const body = await pvr.json();
-    privateVulnerabilityReporting = Boolean(body.enabled);
+    // The same guard the branch-ruleset read below already carries: V8's parse
+    // error quotes the body, and an uncaught throw here rides main().catch()
+    // into a public log. An unparseable body leaves the bit unknown, like a
+    // denied one.
+    const body = await pvr.json().catch(() => null);
+    if (body) privateVulnerabilityReporting = Boolean(body.enabled);
   } else if (pvr.status === 404 || pvr.status === 403) {
     privateVulnerabilityReporting = null;
   }
@@ -275,8 +326,8 @@ async function fetchSecurityFloor(repo, detail) {
   let codeqlConfigured = null;
   const codeql = await gh(`/repos/${ACCOUNT}/${repo}/code-scanning/default-setup`);
   if (codeql.ok) {
-    const body = await codeql.json();
-    codeqlConfigured = body.state === 'configured' || body.state === 'CodeQL exists';
+    const body = await codeql.json().catch(() => null);
+    if (body) codeqlConfigured = body.state === 'configured' || body.state === 'CodeQL exists';
   } else if (codeql.status === 404) {
     codeqlConfigured = false;
   } else if (codeql.status === 403) {
@@ -460,12 +511,21 @@ export function sanitizeDelta(value, repoName) {
   return value;
 }
 
-async function loadManifest() {
+export async function loadManifest() {
   const encoded = MANIFEST_PATH.split('/').map(encodeURIComponent).join('/');
-  const file = await ghJson(`/repos/${ACCOUNT}/${MANIFEST_REPO}/contents/${encoded}`);
+  const file = await ghJson(`/repos/${ACCOUNT}/${MANIFEST_REPO}/contents/${encoded}`, {
+    label: 'governance manifest read',
+  });
   if (!file?.content) throw new Error('Unable to load governance/repos.json');
   const raw = Buffer.from(file.content, 'base64').toString('utf8');
-  return JSON.parse(raw);
+  // JSON.parse's SyntaxError quotes the text it choked on — here, decoded file
+  // content from a private repo. The filename is everything a maintainer needs
+  // to fix it; the content is exactly what must not reach a public log.
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('governance/repos.json is not valid JSON');
+  }
 }
 
 /**
@@ -474,8 +534,9 @@ async function loadManifest() {
  * Runs before gate 2 has decided whether this repo may be named at all, so it
  * must never put the name, the request path, or GitHub's response body into an
  * error: `main().catch()` prints those, and Actions logs on a public repository
- * are public. `ghJson` embeds all three, which is correct for every *post*-gate
- * call and wrong here.
+ * are public. `ghJson` throws at all, which is the disqualifying property here
+ * whatever its message says — this side of the gate has no failure worth ending
+ * the run over, only a repo that does not get published.
  *
  * Any failure is withholding, not an exception. If visibility cannot be
  * determined, the repo is not published. Statuses accumulate into `failures`

@@ -278,3 +278,11 @@ tr:last-child td {
 .error {
   color: var(--danger);
 }
+
+/* Was two inline `style` props. React sets those through the CSSOM, which CSP
+   does not intercept — but relying on that distinction to satisfy a policy is
+   the kind of subtlety that stops being true after one refactor. */
+.value .qualifier {
+  font-size: 0.9rem;
+  font-weight: 500;
+}

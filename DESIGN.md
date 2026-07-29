@@ -97,6 +97,19 @@ This last rule generalizes beyond the code that introduced it: any logic
 written while every governed repo was published may be wrong now that some are
 not, whether or not it appears in the diff that introduced withholding.
 
+**A thrown error carries a literal and a status, never a response.** The two
+functions that can end the run — `ghJson` and, historically, `countOpenAlerts` —
+both state at their definition that they must not be called before the
+visibility gate, because `main().catch()` prints what they throw. The message
+uses a label supplied as a constant at the call site rather than the request
+path, so the safety does not depend on which path was requested or on the next
+caller reading the constraint. Request paths and response bodies are available
+only under `COLLECT_DEBUG`, which the Pages workflow has no way to set — the
+collect step passes it nothing but a token. GitHub's error bodies are ordinarily
+harmless, but they cross a boundary the threat model treats as
+attacker-controlled, and this was safe before only by where the callers happened
+to sit.
+
 ## Decision: manifest free text
 
 `note` is **not published**. It was collected and written into the artifact but
@@ -304,6 +317,76 @@ schedule, in production, with the credential in hand. `tools/workflows.test.mjs`
 asserts against the workflow source instead — including the contract between the
 collector's output keys and the gate that reads them, which spans two files and
 which neither file's own tests can see.
+
+## Decision: the page has no third-party origin, and a policy that says so
+
+The page loaded two IBM Plex families from Google's CDN. Two costs, and the
+second is the one specific to this repository.
+
+A stylesheet from another host sits **inside the page's trust boundary** — it can
+set content, pull further resources, and is a live dependency on every load. A
+page whose entire job is publishing the organization's security posture should
+not itself depend on an origin outside the organization's control.
+
+And **every visitor was disclosed to a third party**. Who reads a fleet security
+dashboard, and when, is meaningful signal even though the page itself is public.
+`preconnect` made that disclosure happen before any resource was even requested,
+and would have outlived deleting the stylesheet it was added for.
+
+**Both families are now served from this origin**, so the policy needs no
+allowances at all. That is the argument for removing the links rather than
+allow-listing them: an allowance is a standing permission, and the page now has
+none to grant.
+
+```
+default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self';
+img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none';
+object-src 'none'
+```
+
+`script-src 'self'` with no `unsafe-inline` and no `unsafe-eval` is the one
+control here that keeps working after something upstream in the build pipeline
+has already gone wrong; `connect-src 'self'` denies an injected beacon anywhere
+to report to. Two inline `style` props were moved into a class — React sets
+those through the CSSOM, which CSP does not intercept, but relying on that
+distinction to satisfy a policy stops being true after one refactor.
+
+**`frame-ancestors` is deliberately absent.** It is ignored when a policy is
+delivered in a `<meta>` element, and Pages serves static files with no way to set
+a response header. Writing it would read as clickjacking protection while
+providing none — the exact failure this repository exists to avoid. Framing
+protection is not available on Pages without a proxy in front; that is a real
+residual, not an oversight.
+
+**Latin1 plus Pi, per weight.** `unicode-range` means a browser fetches each
+subset only when it needs a glyph from it. Pi is not optional: U+2265 lives
+there, and `openSecurityLabel` renders `≥6` for a partially-read total — Latin1
+alone would render that one glyph in a fallback face, in the security label.
+Verified in a browser: forcing an unreadable count pulled exactly the two Pi
+files whose faces render it, and no others.
+
+Vendored from the official IBM packages `@ibm/plex-sans@1.1.0` and
+`@ibm/plex-mono@2.5.0`, SIL Open Font License 1.1 (`public/fonts/LICENSE.txt`).
+Fetched with `npm pack`, so nothing was added to `dependencies`. Digests are
+recorded because a binary blob is the one thing in this repository that review
+cannot read — 207 KB across 14 files:
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `IBMPlexMono-Medium-Latin1.woff2` | 17,868 | `41201b658a328b9d00368215c2f1102770f80b15952ab82631e4006255e6365d` |
+| `IBMPlexMono-Medium-Pi.woff2` | 13,968 | `92bd18415e8c43a2569f615e4e84a94b1b1c4e0377ba9d8f4d894bbf6ffcc39d` |
+| `IBMPlexMono-Regular-Latin1.woff2` | 17,544 | `e8993d946649b9d01abb1ed06d574b19d8ea3e66b5c3948602db335c44c18e56` |
+| `IBMPlexMono-Regular-Pi.woff2` | 13,780 | `b8002770aa636f544ba43e124da6a227301769754f295eae26e16475b469c767` |
+| `IBMPlexMono-SemiBold-Latin1.woff2` | 17,872 | `b7acd05041ab65f3b7039e218ddd893065e11a07e85ea85019473152a51b6b7d` |
+| `IBMPlexMono-SemiBold-Pi.woff2` | 13,872 | `1637166246d386507b1351d59ddda93b732f781d06c0a6574e486104a00897b1` |
+| `IBMPlexSans-Bold-Latin1.woff2` | 21,256 | `914f1400f363e636b6f9cc7965aa807ff01e93586e1437617525cba0a62aa78d` |
+| `IBMPlexSans-Bold-Pi.woff2` | 7,656 | `be77a1e1773f42f0abf473795b0890da2d098e36f49fe15ef95480acf4be91d8` |
+| `IBMPlexSans-Medium-Latin1.woff2` | 21,960 | `b5610af04d0d4b5a14a621d96d974b993e945a065db1a8861918f69ef9321934` |
+| `IBMPlexSans-Medium-Pi.woff2` | 7,768 | `bf05f10c977353cfb5a5c11e8973adf77c2b93a4798da3aa0dd8ba5088e12515` |
+| `IBMPlexSans-Regular-Latin1.woff2` | 20,984 | `b5ad7bd39f996144915f0ad9849a90183b27d8c28ad97ed98af5b1bebc51f6b1` |
+| `IBMPlexSans-Regular-Pi.woff2` | 7,500 | `1487059829a180f975627e473acc81ff22c2c0faf1da09b314c27eeb41b7f2e4` |
+| `IBMPlexSans-SemiBold-Latin1.woff2` | 22,260 | `fff0ab3a88b0b4aa0b693e4f0201359a15183b08e3fa5696d1918d8f0ade8ad5` |
+| `IBMPlexSans-SemiBold-Pi.woff2` | 7,824 | `768421433d850d3a30118dddf05972625d99ee49bc32c5a8fd26bbe020c4d0f9` |
 
 ## Local development
 
