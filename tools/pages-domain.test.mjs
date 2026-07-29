@@ -29,14 +29,19 @@ const WRANGLER = readFileSync(
 );
 
 test('the published site claims exactly one custom domain', () => {
-  assert.equal(
-    CNAME.trim(),
-    HOST,
-    'public/CNAME drives the Pages custom domain; a stale or empty value un-gates the origin',
+  // Deliberately not `CNAME.trim() === HOST`. Pages reads the first line, so a
+  // file that merely *contains* the host on some later line is not the same as
+  // one that publishes it — and `trim()` cannot tell those apart. Worse, a
+  // follow-up assertion on `CNAME.trim()` inherits the same blind spot, so two
+  // assertions become one. Compare the bytes, and allow nothing beyond a single
+  // trailing newline.
+  assert.ok(
+    CNAME === HOST || CNAME === `${HOST}\n`,
+    `public/CNAME must be exactly "${HOST}" with an optional trailing newline; ` +
+      `got ${JSON.stringify(CNAME)}. Leading blank lines, extra hosts, or stray ` +
+      `whitespace can cost the custom domain, and with it the redirect that keeps ` +
+      `the github.io origin from serving /data/* anonymously.`,
   );
-  // A second host would survive `trim()` only as embedded whitespace, and Pages
-  // reads the first line regardless — so say it out loud rather than inferring it.
-  assert.doesNotMatch(CNAME.trim(), /\s/, 'CNAME must hold a single bare hostname');
 });
 
 test('the custom domain stays inside free Universal SSL coverage', () => {
