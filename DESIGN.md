@@ -66,6 +66,17 @@ reached by default, and this repository's stated posture is to fail closed.
 **Consequence.** Until the manifest carries `publish: true`, the collector
 publishes nothing. The manifest must be updated before this ships to Pages.
 
+**A failure to decide is not a decision.** `withheld` counts governed repos the
+collector *chose* not to publish — not opted in, or observed non-public. A repo
+whose gate lookup was denied, rate-limited, or timed out publishes no row
+either, which is why the two were once a single number, but they are opposite
+claims to a reader judging whether the fleet is under control: one says the
+fleet is deliberately curated, the other says this run could not tell. Folding
+the second into the first made a rate limit look like governance. `unreadable`
+is therefore its own count, never summed with `withheld` in the collector or the
+page, and `published + withheld + unreadable === governed` is asserted rather
+than trusted — a denominator that cannot be derived is not published as a guess.
+
 **A snapshot may state what it is; it may not assert what the fleet is.**
 `withheld` is therefore `number | null`, and the committed fixture states
 `null`. The fixture is the fallback deployed whenever collection fails —

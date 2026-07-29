@@ -14,6 +14,7 @@ import {
   sumOpenSecurity,
   toneForOpenSecurity,
   visibleRepos,
+  unreadableCount,
   withheldCount,
 } from './aggregate.ts';
 
@@ -52,7 +53,7 @@ function counts(overrides: Partial<SecurityCounts> = {}): SecurityCounts {
   return { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0, ...overrides };
 }
 
-function snapshot(repos: RepoSnapshot[], withheld = 0): Snapshot {
+function snapshot(repos: RepoSnapshot[], withheld = 0, unreadable = 0): Snapshot {
   return {
     schemaVersion: 1,
     generatedAt: '2026-07-26T12:00:00.000Z',
@@ -62,6 +63,7 @@ function snapshot(repos: RepoSnapshot[], withheld = 0): Snapshot {
       manifestPath: 'governance/repos.json',
     },
     withheld,
+    unreadable,
     collection: { denied: 0, rateLimited: 0, failed: 0 },
     repos,
   };
@@ -281,5 +283,36 @@ test('CI labels name the state a reader has to act on', () => {
   assert.equal(
     ciLabel(repo({ ci: { ...NO_CI, workflowName: 'CI', conclusion: 'failure', status: 'completed' } })),
     'failure',
+  );
+});
+
+// #12, finding 3. Both produce no published row, which is why they were one
+// number — but "we chose not to publish these" and "we could not tell" are
+// opposite claims to anyone judging whether the fleet is under control. A rate
+// limit used to make the fleet look more deliberately curated than it was.
+test('a repo the collector could not evaluate is not counted as deliberately withheld', () => {
+  const snap = snapshot([repo()], 2, 3);
+
+  assert.equal(withheldCount(snap), 2);
+  assert.equal(unreadableCount(snap), 3);
+});
+
+test('an absent or nonsensical unreadable count reads as unknown, not zero', () => {
+  for (const value of [undefined, null, -1, 1.5, Number.NaN, '2', {}]) {
+    const bad = { ...snapshot([repo()]), unreadable: value as number };
+    assert.equal(unreadableCount(bad), null, `unreadable ${JSON.stringify(value)} is unknown`);
+  }
+});
+
+test('the two counts are never collapsed into one number', () => {
+  // Zero withheld with a non-zero unreadable must stay visibly different from
+  // the reverse: one says the fleet is fully opted in, the other says the run
+  // could not tell. Summing them loses exactly that.
+  const couldNotTell = snapshot([repo()], 0, 4);
+  const deliberate = snapshot([repo()], 4, 0);
+
+  assert.notDeepEqual(
+    [withheldCount(couldNotTell), unreadableCount(couldNotTell)],
+    [withheldCount(deliberate), unreadableCount(deliberate)],
   );
 });

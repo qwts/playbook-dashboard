@@ -13,6 +13,7 @@ import {
   toneForCount,
   toneForOpenSecurity,
   visibleRepos,
+  unreadableCount,
   withheldCount,
 } from './lib/aggregate';
 import type { Tone } from './lib/aggregate';
@@ -125,7 +126,11 @@ export function App() {
   const failing = countCiFailing(repos);
   const missingCi = countMissingCi(repos);
   const withheld = withheldCount(state.snapshot);
-  const governed = withheld === null ? null : repos.length + withheld;
+  const unreadable = unreadableCount(state.snapshot);
+  // Deliberately not summed with `withheld`. They are different claims, and the
+  // denominator needs both, but the reader needs them apart.
+  const governed =
+    withheld === null || unreadable === null ? null : repos.length + withheld + unreadable;
 
   return (
     <div className="app">
@@ -145,11 +150,12 @@ export function App() {
           </span>
           <span
             className="pill"
-            data-tone={governed === null || withheld ? 'warn' : 'ok'}
-            title="Governed repos are those the manifest lists as not retired. Withheld repos publish no name, counts, or posture."
+            data-tone={governed === null || unreadable ? 'warn' : withheld ? 'warn' : 'ok'}
+            title="Governed repos are those the manifest lists as not retired. Withheld repos were deliberately not published and publish no name, counts, or posture. Unreadable repos are ones the collector could not evaluate at all — a transient failure, not a decision."
           >
             published {repos.length} of {governed ?? '?'} governed
             {withheld ? ` · ${withheld} withheld` : ''}
+            {unreadable ? ` · ${unreadable} unreadable` : ''}
             {governed === null ? ' · count unknown' : ''}
           </span>
           <span className="pill">

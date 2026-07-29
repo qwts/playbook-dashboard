@@ -539,14 +539,28 @@ async function main() {
     if (row) repos.push(row);
   }
 
-  const withheld = governed.length - repos.length;
   // Counts only. Naming the withheld repos in an Actions log on a public
   // repository would republish exactly what the gates just withheld.
-  const notOptedIn = governed.length - candidates.length;
-  const notObservedPublic = candidates.length - repos.length;
+  //
+  // `withheld` is a count of *decisions*, so a repo whose gate call failed does
+  // not belong in it. Both produce no published row, which is why they were one
+  // number — but they mean opposite things to a reader. "We chose not to publish
+  // these" is a stable, reassuring statement about a fleet under control; "we
+  // could not tell" is a transient failure that will resolve itself next hour,
+  // and folding it into the reassuring number is the same defect as a denied
+  // read rendering as a green zero, one level up. A rate limit made the fleet
+  // look more deliberately curated than it was.
+  const tally = publicationTally({
+    governed: governed.length,
+    candidates: candidates.length,
+    published: repos.length,
+    unreadable: gateFailures.length,
+  });
+  const { withheld, unreadable, notOptedIn, notObservedPublic } = tally;
   warn(
     `withheld ${withheld} of ${governed.length} governed repos ` +
-      `(${notOptedIn} without publish: true, ${notObservedPublic} not observed public)`,
+      `(${notOptedIn} without publish: true, ${notObservedPublic} not observed public)` +
+      (unreadable > 0 ? `, and ${unreadable} could not be read at all` : ''),
   );
   if (gateFailures.length) {
     // Sorted and tallied, so the order tells you nothing about which candidate
@@ -581,6 +595,9 @@ async function main() {
       manifestPath: MANIFEST_PATH,
     },
     withheld,
+    // Kept apart from `withheld` because they are not the same claim: this one
+    // is "the gate could not be evaluated", which is a failure, not a decision.
+    unreadable,
     // Why reads were missing, in aggregate and never per repo. A `null` count
     // used to mean "denied" and "rate limited" indistinguishably; the first is
     // a permission that will not change this run, the second is transient.
@@ -603,6 +620,49 @@ async function main() {
   // the write throws, the step fails, `fresh` is false, and the stale gate — not
   // this one — is the accurate complaint.
   reportDegradation(reasons);
+}
+
+/**
+ * How the governed set divides, with failures kept out of the decisions.
+ *
+ * Every governed repo lands in exactly one bucket, and the invariant
+ * `published + withheld + unreadable === governed` is what makes the published
+ * denominator mean anything. It is asserted here rather than trusted, because
+ * the failure is silent in both directions: too high and the page claims a
+ * fleet larger than it is, too low and a repo vanishes with nothing to say so.
+ *
+ * `withheld` counts *decisions* — not opted in, or observed non-public.
+ * `unreadable` counts gates that could not be evaluated. Both publish no row,
+ * which is why they were once one number, but they are opposite claims about
+ * whether the fleet is under control.
+ */
+export function publicationTally({ governed, candidates, published, unreadable }) {
+  const notOptedIn = governed - candidates;
+  const notObservedPublic = candidates - published - unreadable;
+  const withheld = notOptedIn + notObservedPublic;
+
+  // The last condition is implied by the two above it: with non-negative
+  // integer inputs the sum reduces to `governed` algebraically, so no *input*
+  // can trip it. It is not dead. It is the only guard against a future change
+  // to the *derivation* — dropping the `- unreadable` term above makes it the
+  // sole thing that fires. Verified by doing exactly that with the other checks
+  // removed. Noted because the alternative reading is that it is an unreachable
+  // branch pretending to be a safety net.
+  if (
+    [governed, candidates, published, unreadable].some((n) => !Number.isInteger(n) || n < 0) ||
+    notOptedIn < 0 ||
+    notObservedPublic < 0 ||
+    published + withheld + unreadable !== governed
+  ) {
+    // Not recoverable by guessing. Publishing a denominator we cannot derive
+    // would state something about the fleet that is not true.
+    throw new Error(
+      `publication tally does not add up: ${published} published + ${withheld} withheld + ` +
+        `${unreadable} unreadable != ${governed} governed`,
+    );
+  }
+
+  return { withheld, unreadable, notOptedIn, notObservedPublic };
 }
 
 /**
