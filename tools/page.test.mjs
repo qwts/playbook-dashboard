@@ -14,8 +14,67 @@ const CSS = ['../src/styles.css', '../src/fonts.css']
   .map((rel) => readFileSync(new URL(rel, import.meta.url), 'utf8'))
   .join('\n');
 
-/** Comments explain the policy and quote parts of it; they are not the policy. */
-const MARKUP = HTML.replace(/<!--[\s\S]*?-->/gu, '');
+/**
+ * The page's tags, with comments skipped. Comments explain the policy and quote
+ * parts of it; they are not the policy.
+ *
+ * Deliberately not `HTML.replace(/<!--[\s\S]*?-->/g, '')`. Removing a matched
+ * sequence can reintroduce the delimiter it removed — `<!--<!-- -->-->` leaves a
+ * stray `-->` behind — so a crafted comment could hide a real <link> from every
+ * assertion below, turning these guards off without touching them. CodeQL
+ * flagged exactly that (js/incomplete-multi-character-sanitization), and it was
+ * right: a security check that a comment can disable is not a check.
+ *
+ * A single left-to-right pass cannot be re-entered, because each character is
+ * consumed once. Quoted attribute values are tracked so a `>` inside `content="…"`
+ * does not end a tag early.
+ */
+function markupOnly(html) {
+  const tags = [];
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1) break;
+    if (html.startsWith('<!--', lt)) {
+      // HTML5 says `<!-->` and `<!--->` are complete, empty comments. Anything
+      // that instead scans forward for a full `-->` swallows every tag until
+      // the *next* comment closes — so `<!--><link href="https://elsewhere">`
+      // followed by any ordinary comment hides a link the browser loads. That
+      // is the bypass direction that matters here, and the naive regex and my
+      // first scanner both had it.
+      if (html.startsWith('<!-->', lt)) {
+        i = lt + 5;
+        continue;
+      }
+      if (html.startsWith('<!--->', lt)) {
+        i = lt + 6;
+        continue;
+      }
+      const end = html.indexOf('-->', lt + 4);
+      i = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    let j = lt + 1;
+    let quote = null;
+    while (j < html.length) {
+      const ch = html[j];
+      if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '>') {
+        break;
+      }
+      j += 1;
+    }
+    if (j >= html.length) break;
+    tags.push(html.slice(lt, j + 1));
+    i = j + 1;
+  }
+  return tags.join('\n');
+}
+
+const MARKUP = markupOnly(HTML);
 
 function policy() {
   const match = MARKUP.match(
@@ -37,12 +96,24 @@ function policy() {
 test('the page carries a policy with no escape hatches', () => {
   const directives = policy();
 
+  // Substring containment, not a constructed RegExp: escaping the metacharacters
+  // of a value in order to search for it literally is a step with nothing to
+  // gain and a way to be wrong (CodeQL: js/incomplete-sanitization, since
+  // `.replace` without /g escaped only the first `*`).
+  const stated = Object.entries(directives)
+    .map(([name, values]) => `${name} ${values.join(' ')}`)
+    .join('; ');
+
   for (const escape of ["'unsafe-inline'", "'unsafe-eval'", "'unsafe-hashes'", '*']) {
-    assert.doesNotMatch(
-      JSON.stringify(directives),
-      new RegExp(escape.replace(/[*]/u, '\\*'), 'u'),
-      `${escape} defeats the policy`,
-    );
+    assert.ok(!stated.includes(escape), `${escape} defeats the policy: ${stated}`);
+  }
+
+  // `data:` is a fetchable scheme, so it belongs nowhere a fetch could execute
+  // or exfiltrate. It is allowed in img-src alone, where the worst case is a
+  // rendered image, and where Vite may inline a small asset.
+  for (const [name, values] of Object.entries(directives)) {
+    if (name === 'img-src') continue;
+    assert.ok(!values.includes('data:'), `data: in ${name} is a fetchable scheme`);
   }
 });
 
@@ -185,4 +256,29 @@ test('the subsets cover every character the page can render', () => {
       );
     }
   }
+});
+
+// The guard has to survive an attempt to switch it off. A check that a crafted
+// comment can disable is not a check, and the failure is silent in the worst
+// direction: the page loads the resource, the test reports clean.
+test('a crafted comment cannot hide a resource from these assertions', () => {
+  const evil = 'https://fonts.googleapis.com/css2?family=X';
+  const pages = [
+    // HTML5 empty comments: the browser ends them at `>`, so the link is live.
+    `<head><!--><link rel="stylesheet" href="${evil}"><!-- ordinary --></head>`,
+    `<head><!---><link rel="stylesheet" href="${evil}"><!-- ordinary --></head>`,
+    // Delimiter reintroduction: stripping the inner match leaves `<!--` behind.
+    `<head><!--<!-- --><link rel="stylesheet" href="${evil}">--></head>`,
+    // A `>` inside an attribute value must not end the tag early.
+    `<head><meta content="a > b" /><link rel="stylesheet" href="${evil}"></head>`,
+  ];
+
+  for (const page of pages) {
+    assert.match(markupOnly(page), /fonts\.googleapis\.com/u, `hidden by: ${page}`);
+  }
+});
+
+test('an actual comment is still not mistaken for markup', () => {
+  const page = '<head><!-- <link rel="stylesheet" href="https://elsewhere.example/x"> --></head>';
+  assert.doesNotMatch(markupOnly(page), /elsewhere\.example/u);
 });
