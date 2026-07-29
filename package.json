@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "node --test \"src/**/*.test.ts\" \"tools/**/*.test.mjs\"",
     "collect": "node tools/collect.mjs",
-    "ci": "npm run typecheck && npm test && npm run build"
+    "ci": "npm run typecheck && npm test && npm run validate && npm run build",
+    "validate": "node tools/validate-snapshot.mjs"
   },
   "dependencies": {
     "react": "^19.1.1",

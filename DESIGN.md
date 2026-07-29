@@ -146,6 +146,53 @@ The failure this prevents is specific: a dashboard that looks most reassuring
 exactly where it knows least. For a tool whose entire job is reporting posture,
 that is the one error nobody ever investigates.
 
+## Decision: the redaction contract is executable, and it fails closed
+
+Nothing inspected the snapshot between generating it and publishing it. The rule
+lived in a comment at the top of `collect.mjs`, and a comment cannot fail a
+build. `Snapshot` in `src/types/snapshot.ts` describes the intended shape, but it
+is a compile-time type over a file written at runtime and fetched by a browser —
+`tsc` never sees the bytes that ship.
+
+So the published surface could only grow. Any change adding a field to a
+collector return value published that field silently, on the next hourly cron,
+with no step at which anyone saw that the artifact now contained something it
+did not contain before.
+
+`tools/snapshot-schema.mjs` is the contract. `npm run validate` runs it, in
+`npm run ci` and between collect and build in the workflow — the same script in
+both, because two definitions of "is this publishable" drift and the drift is
+invisible until one of them is wrong.
+
+**The assertion that matters is the closed key set at every level.** Checking
+that known fields are well-formed catches malformed data; only rejecting unknown
+keys catches *new* data, and new data is how a leak arrives. Adding a field to
+the artifact now requires adding it here too — a deliberate act with a diff
+attached. Everything else the check does (counts null-or-non-negative-integer,
+URLs through the collector's own `sanitizeGithubUrl` rather than a second copy
+of the rule, string caps, `visibility` exactly `public`, no duplicate rows,
+timestamps parseable and not in the future) is worth having but would not have
+caught the failure this exists to prevent.
+
+**This gate fails closed, and it is the only one that does.** The stale and
+degraded gates deploy first and then redden the run, because a legible degraded
+dashboard beats an outage. That trade does not survive here: a snapshot failing
+validation may contain something the contract forbids, and publishing it to find
+out is the entire failure. A non-zero exit fails the collect job, so build and
+deploy never run and the previously published artifact stays where it is.
+
+**Staleness is a property of a run, not of the contract.** `--fresh` is passed
+only when collection actually succeeded. The committed fixture must satisfy every
+structural rule — it is a published artifact whenever collection fails — but it
+is deliberately old, and demanding freshness of it would fail every run in
+exactly the situation it exists to cover. A *future* timestamp is refused
+either way: it makes a stale artifact read as current for as long as the skew
+lasts, which is the one direction that suppresses the staleness warning.
+
+**A violation names the field path and the reason, never the value.** The thing
+that failed validation is exactly the thing not to copy into a log that is
+public on this repository.
+
 ## Decision: the job that signs runs nothing that could abuse the signature
 
 `id-token: write` mints an OIDC token asserting `repo:qwts/playbook-dashboard`,
