@@ -98,12 +98,16 @@ collector publishes.
 
 ### One-time setup
 
-1. **Apple Developer portal** — create a Services ID (the web `client_id`),
-   enable Sign in with Apple, and register the return URL
-   `https://dashboard.qwts.org/auth/callback`. Apple verifies the domain by
-   fetching `/.well-known/apple-developer-domain-association.txt`, so the site
-   must already be live at that host. Create a Sign in with Apple key and
-   download the `AuthKey_XXXXXXXX.p8`.
+1. **Apple Developer portal** — create a Services ID (the web `client_id`) and
+   enable Sign in with Apple with the return URL
+   `https://dashboard.qwts.org/auth/callback`. Registering the domain produces
+   an `apple-developer-domain-association.txt`: commit it to
+   `public/.well-known/` and let Pages deploy it *before* pressing **Verify**,
+   because Apple fetches it from the live site and the Worker proxies that path
+   to the Pages origin. The association file is a public ownership token and
+   belongs in the repository. The `AuthKey_XXXXXXXX.p8` from the same portal
+   does not — it is downloaded once and lives only in the `APPLE_PRIVATE_KEY`
+   Worker secret.
 2. **Google Cloud console** — create a project, configure the OAuth consent
    screen as **External** and publish it (an unpublished app only admits test
    users), verify `qwts.org` in Search Console and list it as an authorised
