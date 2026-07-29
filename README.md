@@ -137,10 +137,8 @@ over emitting privileged detail.
 
 GitHub Actions builds the site and deploys to GitHub Pages at
 `https://dashboard.dev.zts1.com/`. The auth Worker deploys separately from
-`.github/workflows/worker.yml` whenever `workers/` changes on `main`, using the
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. The deploy step is
-gated on the ref rather than the event, so a `workflow_dispatch` run cannot
-publish an unreviewed branch as the production auth gate. Identity-provider
+`.github/workflows/worker.yml` whenever `workers/` changes, using the
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. Identity-provider
 secrets live only in Cloudflare, never in the Pages build environment.
 
 The hostname is a Route 53 `CNAME` to `qwts.github.io`, and `public/CNAME`

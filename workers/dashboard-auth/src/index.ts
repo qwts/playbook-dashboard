@@ -8,12 +8,12 @@
  * configured provider gets one — there are no roles or permissions.
  */
 
-import { safeEqual, sha256Base64Url } from './crypto.ts';
-import type { Env, Provider } from './env.ts';
-import { isProvider } from './env.ts';
-import { buildAppleAuthorizeUrl, exchangeAppleCode } from './providers/apple.ts';
-import { buildGitHubAuthorizeUrl, exchangeGitHubCode } from './providers/github.ts';
-import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from './providers/google.ts';
+import { safeEqual, sha256Base64Url } from './crypto';
+import type { Env, Provider } from './env';
+import { isProvider } from './env';
+import { buildAppleAuthorizeUrl, exchangeAppleCode } from './providers/apple';
+import { buildGitHubAuthorizeUrl, exchangeGitHubCode } from './providers/github';
+import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from './providers/google';
 import {
   SESSION_COOKIE,
   TX_COOKIE,
@@ -23,7 +23,7 @@ import {
   readSession,
   readTx,
   serializeCookie,
-} from './session.ts';
+} from './session';
 
 type Identity = {
   subject: string;

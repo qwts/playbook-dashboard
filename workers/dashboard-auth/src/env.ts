@@ -23,7 +23,7 @@ export type Env = {
 
 export type Provider = 'apple' | 'google' | 'github';
 
-export function isProvider(value: unknown): value is Provider {
+export function isProvider(value: string | null): value is Provider {
   return value === 'apple' || value === 'google' || value === 'github';
 }
 

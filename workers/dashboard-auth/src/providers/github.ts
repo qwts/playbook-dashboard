@@ -5,7 +5,7 @@
  * session. The access token is used once, here, and never stored.
  */
 
-import type { Env } from '../env.ts';
+import type { Env } from '../env';
 
 const AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const TOKEN_URL = 'https://github.com/login/oauth/access_token';
