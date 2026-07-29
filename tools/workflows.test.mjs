@@ -56,7 +56,11 @@ test('the step allowed to fail is the only one allowed to fail', () => {
 
 test('every job is bounded, so a wedged run cannot hold the group for six hours', () => {
   const jobs = [...JOBS.matchAll(/^ {2}([a-z][\w-]*):$/gmu)].map((m) => m[1]);
-  assert.deepEqual(jobs, ['collect', 'build', 'deploy'], 'job list changed — check the bounds');
+  assert.deepEqual(
+    jobs,
+    ['collect', 'build', 'attest', 'deploy'],
+    'job list changed — check the bounds',
+  );
 
   const timeouts = [...JOBS.matchAll(/^ {4}timeout-minutes:\s*(\d+)$/gmu)];
   assert.equal(timeouts.length, jobs.length, 'every job needs its own timeout-minutes');
@@ -155,4 +159,47 @@ test('the collector writes the output keys the workflow reads', () => {
   for (const key of read) {
     assert.ok(written.includes(key), `pages.yml reads '${key}', which the collector never writes`);
   }
+});
+
+// #25. The grant that mints an OIDC token asserting this repository's identity
+// must not sit in the job that executes the build toolchain — vite, esbuild, and
+// every plugin in the tree. `--ignore-scripts` closes install-time execution and
+// does nothing about build-time execution, which is what a bundler is for.
+test('the job that signs runs no repository code', () => {
+  const attest = JOBS.slice(JOBS.indexOf('\n  attest:'), JOBS.indexOf('\n  deploy:'));
+  assert.ok(attest.length > 0, 'the attest job went missing');
+
+  assert.match(attest, /id-token: write/u, 'it has to be able to sign');
+  assert.doesNotMatch(attest, /actions\/checkout/u, 'no checkout — nothing to execute');
+  assert.doesNotMatch(attest, /actions\/setup-node/u, 'no toolchain');
+  assert.doesNotMatch(attest, /npm /u, 'no npm — install or build');
+  assert.doesNotMatch(attest, /^\s*(?:- )?run:/mu, 'no shell step at all');
+
+  // Every step is a SHA-pinned GitHub-owned action over files already produced.
+  const steps = [...attest.matchAll(/uses:\s*(\S+)/gu)].map((m) => m[1]);
+  assert.ok(steps.length >= 2, `expected the attest steps, found ${steps.length}`);
+  for (const step of steps) {
+    assert.match(step, /^actions\//u, `${step} is not a GitHub-owned action`);
+  }
+});
+
+test('the job that builds holds no signing grant', () => {
+  const build = JOBS.slice(JOBS.indexOf('\n  build:'), JOBS.indexOf('\n  attest:'));
+  assert.ok(build.length > 0, 'the build job went missing');
+
+  assert.match(build, /permissions:\n\s*contents: read\n\s*steps:/u, 'contents: read and nothing else');
+  assert.doesNotMatch(build, /id-token: write/u, 'the toolchain must not be able to mint an OIDC token');
+  assert.doesNotMatch(build, /attestations: write/u, 'the toolchain must not be able to sign');
+});
+
+// Attesting from `deploy` would need one job fewer and attest the Pages tarball
+// — a single subject instead of many. `data/snapshot.json` would stop being
+// individually verifiable, which is the part with actual value for a repo whose
+// product is auditable claims.
+test('the attestation subject is the individual files, not a tarball', () => {
+  const attest = JOBS.slice(JOBS.indexOf('\n  attest:'), JOBS.indexOf('\n  deploy:'));
+  assert.match(attest, /subject-path:\s*dist\/\*\*/u);
+
+  const deploy = JOBS.slice(JOBS.indexOf('\n  deploy:'));
+  assert.doesNotMatch(deploy, /attest-build-provenance/u, 'attesting there coarsens the subject');
 });

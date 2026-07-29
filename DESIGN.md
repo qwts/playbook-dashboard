@@ -135,6 +135,46 @@ The failure this prevents is specific: a dashboard that looks most reassuring
 exactly where it knows least. For a tool whose entire job is reporting posture,
 that is the one error nobody ever investigates.
 
+## Decision: the job that signs runs nothing that could abuse the signature
+
+`id-token: write` mints an OIDC token asserting `repo:qwts/playbook-dashboard`,
+which matters wherever a cloud role trusts that subject. It sat in the job that
+runs `npm run build` — vite, esbuild, and every plugin in the tree.
+`--ignore-scripts` closes *install*-time execution and does nothing about
+*build*-time execution, which is the entire purpose of a bundler.
+
+Nothing in this organization trusts that subject today. That is why this was low
+severity rather than urgent — and it is also the reason not to leave the
+capability lying there, because "nothing trusts it today" is exactly the kind of
+assumption that stops being true when someone adds a cloud role, without anyone
+revisiting this workflow.
+
+**Attestation moved to its own job.** `attest` downloads the built files and
+signs them, running no checkout, no npm, and no repository code at all — only
+SHA-pinned GitHub-owned actions over files this workflow already produced.
+`build` drops to `contents: read`, the same property `collect` has.
+
+**Rejected: attesting from `deploy`.** It needs one job fewer and `deploy`
+already holds `id-token: write` for `deploy-pages`, so it looked like the
+cheapest answer. It attests the Pages **tarball** — one subject instead of many.
+`data/snapshot.json` would stop being individually verifiable, and for a
+repository whose product is auditable claims about security posture, binding the
+published snapshot by digest to the run that collected it *is* the product. A
+reader can check that a number came from a real collection run; coarsening the
+subject to a tarball removes that and is hard to walk back.
+
+**Rejected: leaving it in `build`.** Best granularity, but it keeps a signing
+grant beside the toolchain that executes third-party build code — the thing
+being avoided.
+
+The cost is one job and one artifact round-trip: `build` uploads `dist` a second
+time as individual files, because `upload-pages-artifact` produces a tarball and
+per-file subjects need the files. Same bytes either way.
+
+`attest` runs in parallel with `deploy` rather than gating it. An attestation
+failure must not take the site down — but the run still goes red, which is the
+shape every other gate in this workflow uses.
+
 ## Decision: a run that succeeded is not a run that was complete
 
 The rule above governs the page. This one governs the run that builds it, and it
