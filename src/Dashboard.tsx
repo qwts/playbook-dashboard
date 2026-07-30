@@ -20,6 +20,7 @@ import {
 } from './lib/aggregate';
 import type { Tone } from './lib/aggregate';
 import { PROVIDER_LABELS, type Session } from './lib/auth';
+import { validateSnapshot } from './lib/snapshot-schema.ts';
 import type { RepoSnapshot, Snapshot } from './types/snapshot';
 
 type LoadState =
@@ -146,8 +147,29 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
         if (!response.ok) {
           throw new Error(`Failed to load snapshot (${response.status})`);
         }
-        const snapshot = (await response.json()) as Snapshot;
-        if (!cancelled && seq === latestRequest) setState({ status: 'ready', snapshot });
+        const payload: unknown = await response.json();
+        if (cancelled || seq !== latestRequest) return;
+        // The snapshot is untrusted input — a stale cache, a hand-edited file,
+        // or an artifact that predates the contract. Hold it to the same
+        // executable contract `npm run validate` applies before publication,
+        // and fail closed instead of partially rendering whatever parsed.
+        //
+        // The violation list is not rendered, logged, or embedded in the
+        // error: its paths quote key names from the artifact that just failed
+        // the trust check, which is exactly the text that must not reach a
+        // reader. One violation is enough to refuse, so collection stops at
+        // one — a hostile payload does not get to bill the tab a string per
+        // defect. Wide clock skew because this runs on the reader's machine,
+        // and an end-user clock minutes behind must not take the dashboard
+        // down.
+        const violations = validateSnapshot(payload, {
+          clockSkewMs: 5 * 60_000,
+          maxViolations: 1,
+        });
+        if (violations.length > 0) {
+          throw new Error('Snapshot failed validation and was not rendered');
+        }
+        setState({ status: 'ready', snapshot: payload as Snapshot });
       } catch (error: unknown) {
         if (cancelled || seq !== latestRequest) return;
         // A failed refresh keeps the last good snapshot on screen — its own

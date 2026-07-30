@@ -1,6 +1,5 @@
 import type { RepoSnapshot, Snapshot } from '../types/snapshot';
-
-const STALE_MS = 24 * 60 * 60 * 1000;
+import { STALE_MS } from './snapshot-schema.ts';
 
 /**
  * Rows the page is allowed to render.

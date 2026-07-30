@@ -25,23 +25,24 @@ import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import {
+  ALLOWED_URL_ORIGIN,
+  MAX_DELTA_LENGTH,
+  MAX_WORKFLOW_NAME_LENGTH,
+  sanitizeGithubUrl,
+} from '../src/lib/snapshot-schema.ts';
+
+// Re-exported so existing importers keep a stable path. The definitions moved
+// to src/lib/snapshot-schema.ts — zero Node dependencies — so the browser can
+// hold a fetched snapshot to the same contract this collector publishes under.
+// One definition at both ends of the pipe; a second copy is how drift arrives.
+export { ALLOWED_URL_ORIGIN, MAX_DELTA_LENGTH, MAX_WORKFLOW_NAME_LENGTH, sanitizeGithubUrl };
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ACCOUNT = 'qwts';
 const MANIFEST_REPO = 'playbook-engineering';
 const MANIFEST_PATH = 'governance/repos.json';
 const API = 'https://api.github.com';
-
-/** Longest manifest `delta` string that may reach the published page. */
-export const MAX_DELTA_LENGTH = 200;
-
-/**
- * Longest workflow name that may reach the published page. The schema's
- * `CAPS.workflowName` imports this — the same direction `delta`'s cap already
- * flows, schema importing collector — so there is one number and the schema
- * cannot drift from the truncation applied at collect time.
- */
-export const MAX_WORKFLOW_NAME_LENGTH = 128;
 
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
@@ -437,41 +438,10 @@ export function parseCodexSync(entry) {
   return null;
 }
 
-/** The only origin the published dashboard will ever emit a link to. */
-export const ALLOWED_URL_ORIGIN = 'https://github.com';
-
-/**
- * A URL reaches the snapshot only if it is `https:` at exactly
- * `https://github.com`. Everything else becomes `null`, and the UI renders
- * unlinked text.
- *
- * Validated here, where the value enters, rather than at render time. React
- * escapes text content but does not sanitize `href` schemes, so a `javascript:`
- * URL in an `href` is script execution on click. In practice these values come
- * from the GitHub API and are fine — but nothing enforced that, and the
- * property lived entirely in an upstream service's behaviour.
- *
- * Rejects embedded credentials: `https://user:pass@github.com` has an origin of
- * exactly `https://github.com`, so an origin check alone passes it through while
- * the rendered href still carries the credentials — a phishing shape.
- */
-export function sanitizeGithubUrl(value) {
-  if (typeof value !== 'string' || value === '') return null;
-
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-
-  if (url.protocol !== 'https:') return null;
-  if (url.origin !== ALLOWED_URL_ORIGIN) return null;
-  if (url.username || url.password) return null;
-
-  // The parsed, normalized form — not the input string.
-  return url.href;
-}
+// `ALLOWED_URL_ORIGIN` and `sanitizeGithubUrl` lived here; they moved to
+// src/lib/snapshot-schema.ts with the rest of the contract so the browser
+// applies the identical URL rule at render time. Imported and re-exported at
+// the top of this file.
 
 /**
  * Gate 1 — publication is an explicit act recorded in the governance manifest.
