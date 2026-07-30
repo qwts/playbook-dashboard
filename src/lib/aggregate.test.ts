@@ -9,11 +9,13 @@ import {
   countByStatus,
   countCiFailing,
   countMissingCi,
+  floorCoverage,
   formatRelative,
   governedCount,
   isSnapshotStale,
   openSecurityLabel,
   sumOpenSecurity,
+  toneForFloorCoverage,
   toneForOpenSecurity,
   visibleRepos,
   unreadableCount,
@@ -384,4 +386,68 @@ test('the two counts are never collapsed into one number', () => {
     [withheldCount(couldNotTell), unreadableCount(couldNotTell)],
     [withheldCount(deliberate), unreadableCount(deliberate)],
   );
+});
+
+test('floor coverage counts only repos with every bit literally true', () => {
+  const repos = [
+    repo({ name: 'all-on' }),
+    repo({
+      name: 'one-off',
+      securityFloor: { ...repo().securityFloor, pushProtection: false },
+    }),
+    repo({
+      name: 'one-unread',
+      securityFloor: { ...repo().securityFloor, codeqlConfigured: null },
+    }),
+  ];
+
+  assert.deepEqual(floorCoverage(repos), { complete: 1, unknown: 1, total: 3 });
+});
+
+test('an unread floor bit can never count as met', () => {
+  // "Could not read the setting" is not "the setting is on". A repo whose
+  // other five bits are all true still fails complete on the sixth null —
+  // and shows up in `unknown` so the tile can say the read was partial.
+  const partial = repo({
+    securityFloor: { ...repo().securityFloor, defaultBranchRuleset: null },
+  });
+
+  const coverage = floorCoverage([partial]);
+
+  assert.equal(coverage.complete, 0);
+  assert.equal(coverage.unknown, 1);
+  assert.notEqual(toneForFloorCoverage(coverage), 'ok');
+});
+
+test('the floor tile is never green while any bit is unknown', () => {
+  // Same rule as toneForOpenSecurity: green claims "every published repo
+  // meets the whole floor", which a partial read cannot make — even when
+  // every repo that could be read is complete.
+  const unknownAmongComplete = [
+    repo({ name: 'complete' }),
+    repo({
+      name: 'unreadable',
+      securityFloor: { ...repo().securityFloor, secretScanning: null },
+    }),
+  ];
+  assert.equal(toneForFloorCoverage(floorCoverage(unknownAmongComplete)), 'warn');
+
+  const allComplete = [repo({ name: 'a' }), repo({ name: 'b' })];
+  assert.equal(toneForFloorCoverage(floorCoverage(allComplete)), 'ok');
+
+  const knownGap = [
+    repo({ name: 'complete' }),
+    repo({
+      name: 'incomplete',
+      securityFloor: { ...repo().securityFloor, dependabotAlerts: false },
+    }),
+  ];
+  assert.equal(toneForFloorCoverage(floorCoverage(knownGap)), 'warn');
+});
+
+test('an empty fleet renders the floor tile muted, not green', () => {
+  const coverage = floorCoverage([]);
+
+  assert.deepEqual(coverage, { complete: 0, unknown: 0, total: 0 });
+  assert.equal(toneForFloorCoverage(coverage), 'muted');
 });
