@@ -8,6 +8,7 @@
 
 import { decodeJwtPayload } from '../crypto.ts';
 import type { Env } from '../env.ts';
+import { oauthErrorCode } from './oauth-error.ts';
 
 const AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -67,7 +68,8 @@ export async function exchangeGoogleCode(
 
   const payload = (await response.json().catch(() => null)) as GoogleTokenResponse | null;
   if (!response.ok || !payload?.id_token) {
-    throw new Error(`google token exchange failed (${response.status})`);
+    const code = oauthErrorCode(payload);
+    throw new Error(`google token exchange failed (${response.status}${code ? `, ${code}` : ''})`);
   }
 
   // The id_token arrived directly from Google over TLS, so the transport plus

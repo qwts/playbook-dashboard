@@ -8,6 +8,7 @@
 
 import { decodeJwtPayload, signEs256Jwt } from '../crypto.ts';
 import type { Env } from '../env.ts';
+import { oauthErrorCode } from './oauth-error.ts';
 
 const AUTHORIZE_URL = 'https://appleid.apple.com/auth/authorize';
 const TOKEN_URL = 'https://appleid.apple.com/auth/token';
@@ -81,7 +82,8 @@ export async function exchangeAppleCode(
 
   const payload = (await response.json().catch(() => null)) as AppleTokenResponse | null;
   if (!response.ok || !payload?.id_token) {
-    throw new Error(`apple token exchange failed (${response.status})`);
+    const code = oauthErrorCode(payload);
+    throw new Error(`apple token exchange failed (${response.status}${code ? `, ${code}` : ''})`);
   }
 
   // The id_token arrived directly from Apple over TLS, so the transport plus
