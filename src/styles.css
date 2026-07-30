@@ -159,6 +159,12 @@ a {
   color: var(--danger);
 }
 
+/* No data is not a bright headline: an empty fleet's "0 / 0" must not present
+   itself with the same weight as a measured figure. */
+.stat .value[data-tone="muted"] {
+  color: var(--ink-muted);
+}
+
 .section {
   margin-bottom: 2.25rem;
 }
