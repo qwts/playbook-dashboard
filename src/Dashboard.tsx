@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   boolLabel,
+  ciClass,
   ciLabel,
   compareByExposure,
   countByStatus,
@@ -55,11 +56,17 @@ function RepoLink({ repo }: { repo: RepoSnapshot }) {
 }
 
 function toneForCi(repo: RepoSnapshot): Tone {
-  const label = ciLabel(repo);
-  if (label === 'success') return 'ok';
-  if (label === 'no CI') return 'muted';
-  if (label === 'running') return 'warn';
-  return 'danger';
+  switch (ciClass(repo)) {
+    case 'passing':
+      return 'ok';
+    case 'none':
+      return 'muted';
+    case 'running':
+    case 'inconclusive':
+      return 'warn';
+    case 'failing':
+      return 'danger';
+  }
 }
 
 function FloorBits({ repo }: { repo: RepoSnapshot }) {

@@ -139,12 +139,34 @@ export function countByStatus(repos: RepoSnapshot[], status: RepoSnapshot['statu
   return repos.filter((repo) => repo.status === status).length;
 }
 
+/**
+ * What the latest run says about the repo's health.
+ *
+ * `cancelled`, `skipped`, `neutral`, and `stale` are deliberate no-ops, not
+ * verdicts: a cancelled run says nothing about whether the code passes, so it
+ * must not read as red or inflate the failing count. Everything else that is
+ * not an explicit success is `failing` — including conclusions this code does
+ * not recognize, because the snapshot is untrusted input and an unrecognized
+ * verdict cannot be presumed fine.
+ */
+export type CiClass = 'passing' | 'failing' | 'inconclusive' | 'running' | 'none';
+
+const CI_INCONCLUSIVE = new Set(['cancelled', 'skipped', 'neutral', 'stale']);
+
+export function ciClass(repo: RepoSnapshot): CiClass {
+  if (!repo.ci.workflowName && !repo.ci.conclusion) return 'none';
+  if (repo.ci.status === 'in_progress' || repo.ci.status === 'queued') return 'running';
+  if (repo.ci.conclusion === 'success') return 'passing';
+  // A workflow that exists but carries no verdict — `null` or a deliberate
+  // no-op — proves nothing either way: not green, not red, visibly neither.
+  if (repo.ci.conclusion === null || CI_INCONCLUSIVE.has(repo.ci.conclusion)) {
+    return 'inconclusive';
+  }
+  return 'failing';
+}
+
 export function countCiFailing(repos: RepoSnapshot[]): number {
-  return repos.filter((repo) => {
-    if (!repo.ci.status && !repo.ci.conclusion) return false;
-    if (repo.ci.status === 'in_progress' || repo.ci.status === 'queued') return false;
-    return repo.ci.conclusion !== null && repo.ci.conclusion !== 'success';
-  }).length;
+  return repos.filter((repo) => ciClass(repo) === 'failing').length;
 }
 
 export function countMissingCi(repos: RepoSnapshot[]): number {
