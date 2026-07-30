@@ -46,14 +46,22 @@ export function App() {
     };
   }, []);
 
+  /**
+   * The session lapsed under an open dashboard — signalled by the service
+   * worker, or observed directly as a 401 on a snapshot refresh. Either way
+   * the view degrades to the sign-in screen rather than a stale snapshot
+   * pretending to be current.
+   */
+  const handleAuthRequired = useCallback(() => {
+    setAuth((current) =>
+      current.status === 'authenticated' ? { status: 'anonymous', error: null } : current,
+    );
+  }, []);
+
   useEffect(() => {
     if (AUTH_DISABLED) return undefined;
-    return onAuthRequired(() => {
-      setAuth((current) =>
-        current.status === 'authenticated' ? { status: 'anonymous', error: null } : current,
-      );
-    });
-  }, []);
+    return onAuthRequired(handleAuthRequired);
+  }, [handleAuthRequired]);
 
   const handleSignIn = useCallback((provider: Provider) => {
     setPending(provider);
@@ -81,5 +89,11 @@ export function App() {
     return <SignIn error={auth.error} pending={pending} onSignIn={handleSignIn} />;
   }
 
-  return <Dashboard session={auth.session} onSignOut={handleSignOut} />;
+  return (
+    <Dashboard
+      session={auth.session}
+      onSignOut={handleSignOut}
+      onAuthRequired={AUTH_DISABLED ? undefined : handleAuthRequired}
+    />
+  );
 }
