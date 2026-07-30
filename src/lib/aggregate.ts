@@ -139,6 +139,56 @@ export function countByStatus(repos: RepoSnapshot[], status: RepoSnapshot['statu
 }
 
 /**
+ * How much of the fleet meets the whole security floor.
+ *
+ * `complete` counts repos where every floor bit is `true`. A `null` bit means
+ * the collector could not read the setting, and an unread setting cannot be
+ * claimed as met — so a repo with any `null` is not complete, and `unknown`
+ * counts it so the tile can say the read was partial instead of quietly
+ * treating "could not tell" as "off".
+ */
+export type FloorCoverage = {
+  /** Repos with every floor bit `true`. */
+  complete: number;
+  /** Repos with at least one bit the collector could not read. */
+  unknown: number;
+  /** All repos considered. */
+  total: number;
+};
+
+export function floorCoverage(repos: RepoSnapshot[]): FloorCoverage {
+  let complete = 0;
+  let unknown = 0;
+
+  for (const repo of repos) {
+    const bits = [
+      repo.securityFloor?.secretScanning,
+      repo.securityFloor?.pushProtection,
+      repo.securityFloor?.dependabotAlerts,
+      repo.securityFloor?.privateVulnerabilityReporting,
+      repo.securityFloor?.codeqlConfigured,
+      repo.securityFloor?.defaultBranchRuleset,
+    ];
+    // The snapshot is untrusted input: only a literal `true` is a met bit,
+    // and anything that is neither literal boolean is an unread one.
+    if (bits.every((bit) => bit === true)) complete += 1;
+    else if (bits.some((bit) => typeof bit !== 'boolean')) unknown += 1;
+  }
+
+  return { complete, unknown, total: repos.length };
+}
+
+/**
+ * Green is the claim "every published repo meets the whole floor", which a
+ * partial read cannot make — same rule as `toneForOpenSecurity`.
+ */
+export function toneForFloorCoverage(coverage: FloorCoverage): Tone {
+  if (coverage.total === 0) return 'muted';
+  if (coverage.unknown > 0) return 'warn';
+  return coverage.complete === coverage.total ? 'ok' : 'warn';
+}
+
+/**
  * What the latest run says about the repo's health.
  *
  * `cancelled`, `skipped`, `neutral`, and `stale` are deliberate no-ops, not

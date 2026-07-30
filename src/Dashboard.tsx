@@ -7,12 +7,14 @@ import {
   countByStatus,
   countCiFailing,
   countMissingCi,
+  floorCoverage,
   formatRelative,
   governedCount,
   isSnapshotStale,
   openSecurityLabel,
   sumOpenSecurity,
   toneForCount,
+  toneForFloorCoverage,
   toneForOpenSecurity,
   visibleRepos,
   unreadableCount,
@@ -223,6 +225,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
   const openSecurity = sumOpenSecurity(repos);
   const failing = countCiFailing(repos);
   const missingCi = countMissingCi(repos);
+  const floor = floorCoverage(repos);
   const withheld = withheldCount(state.snapshot);
   const unreadable = unreadableCount(state.snapshot);
   // Derived from the unfiltered snapshot, not from `repos`: a row the frontend
@@ -295,6 +298,22 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
               {' '}
               / {missingCi} no CI
             </span>
+          </div>
+        </div>
+        <div className="stat">
+          <div className="label">Floor complete</div>
+          <div
+            className="value"
+            data-tone={toneForFloorCoverage(floor)}
+            title="Published repos where every security-floor setting is enabled: secret scanning, push protection, Dependabot alerts, private vulnerability reporting, CodeQL, and a default-branch ruleset. A repo with any unreadable setting is not counted as complete."
+          >
+            {floor.complete} / {floor.total}
+            {floor.unknown > 0 ? (
+              <span className="muted qualifier">
+                {' '}
+                · {floor.unknown} unknown
+              </span>
+            ) : null}
           </div>
         </div>
       </section>
