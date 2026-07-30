@@ -18,7 +18,7 @@ test('every hardening header is present on a response that leaves the Worker', (
   assert.match(csp, /default-src 'self'/);
 });
 
-test('hardening never strips what a response already carries', () => {
+test('hardening preserves unrelated headers but overwrites a stale policy', () => {
   const response = applySecurityHeaders(
     new Response(null, {
       status: 302,
@@ -26,6 +26,8 @@ test('hardening never strips what a response already carries', () => {
         Location: '/',
         'Cache-Control': 'no-store',
         'Set-Cookie': 'session=x; HttpOnly',
+        // An origin-supplied policy must not survive: the Worker's is canonical.
+        'Content-Security-Policy': 'default-src *',
       },
     }),
   );
@@ -34,6 +36,8 @@ test('hardening never strips what a response already carries', () => {
   assert.equal(response.headers.get('Location'), '/');
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal(response.headers.get('Set-Cookie'), 'session=x; HttpOnly');
+  assert.notEqual(response.headers.get('Content-Security-Policy'), 'default-src *');
+  assert.match(response.headers.get('Content-Security-Policy') ?? '', /frame-ancestors 'none'/);
 });
 
 test('the header CSP and the index.html meta CSP agree', () => {
@@ -52,9 +56,9 @@ test('the fetch export funnels every response through applySecurityHeaders', () 
   // the single wrapped exit. Eighteen return sites is eighteen chances to
   // forget a header; this keeps it at one.
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
-  assert.match(source, /return applySecurityHeaders\(await route\(request, env\)\)/);
+  assert.match(source, /return applySecurityHeaders\(\s*await route\(request,\s*env\)\s*,?\s*\)/);
 
-  const fetchBody = source.match(/async fetch\([^)]*\)[^{]*\{([\s\S]*?)\n {2}\},/)?.[1];
+  const fetchBody = source.match(/async fetch\s*\([^)]*\)[^{]*\{([\s\S]*?)\n\s*\},/)?.[1];
   assert.ok(fetchBody, 'fetch export found');
   const returns = fetchBody.match(/^\s*return /gm) ?? [];
   assert.equal(returns.length, 1, 'fetch has exactly one return statement, the wrapped one');
