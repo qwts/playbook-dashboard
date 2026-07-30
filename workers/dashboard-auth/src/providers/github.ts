@@ -6,6 +6,7 @@
  */
 
 import type { Env } from '../env.ts';
+import { oauthErrorCode } from './oauth-error.ts';
 
 const AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const TOKEN_URL = 'https://github.com/login/oauth/access_token';
@@ -61,7 +62,13 @@ export async function exchangeGitHubCode(
 
   const token = (await tokenResponse.json().catch(() => null)) as GitHubTokenResponse | null;
   if (!tokenResponse.ok || !token?.access_token) {
-    throw new Error(`github token exchange failed (${tokenResponse.status})`);
+    // GitHub reports a bad client_id/secret as HTTP 200 with an `error` body,
+    // so the status alone can read as success. The allowlisted code is the
+    // diagnosable part; error_description and token material never propagate.
+    const code = oauthErrorCode(token);
+    throw new Error(
+      `github token exchange failed (${tokenResponse.status}${code ? `, ${code}` : ''})`,
+    );
   }
 
   const userResponse = await fetch(USER_URL, {

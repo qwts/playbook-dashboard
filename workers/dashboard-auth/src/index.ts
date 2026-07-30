@@ -180,7 +180,15 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
       const result = await exchangeGitHubCode(env, { code, redirectUri, codeVerifier });
       identity = { subject: result.subject, login: result.login, email: result.email };
     }
-  } catch {
+  } catch (error) {
+    // Provider errors are constructed strings — status plus an allowlisted
+    // OAuth error code, never error_description or token material — so the
+    // message is safe to log and is the difference between diagnosing a bad
+    // client secret and staring at a generic 502.
+    console.error(
+      'token exchange failed:',
+      error instanceof Error ? error.message : 'unknown error',
+    );
     return json({ error: 'exchange_failed' }, { status: 502, headers: { 'Set-Cookie': clearTx } });
   }
 
