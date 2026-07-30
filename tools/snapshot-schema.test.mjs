@@ -256,6 +256,20 @@ test('clock skew is a caller decision, and widening it loosens nothing else', ()
   ]);
 });
 
+// The browser only needs to know *whether* the artifact conforms, and a
+// hostile payload — say, thousands of unexpected keys — must not bill the
+// reader's tab a materialized string per defect.
+test('a violation cap bounds the work a hostile artifact can cause', () => {
+  const junk = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`leak${i}`, i]));
+  const capped = validateSnapshot(valid({ ...junk }), { maxViolations: 5 });
+  assert.equal(capped.length, 5);
+
+  // The default stays uncapped: a CI validator describing a trusted
+  // collector's output reports everything, once.
+  const all = validateSnapshot(valid({ ...junk }));
+  assert.equal(all.length, 500);
+});
+
 test('an unparseable timestamp never passes', () => {
   for (const value of ['not a date', '', 42, null, undefined]) {
     const violations = validateSnapshot(valid({ generatedAt: value }));

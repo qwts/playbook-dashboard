@@ -102,7 +102,7 @@ const STATUSES = new Set(['active', 'onboarding', 'retired']);
 /** Written as escapes: a literal control byte in source is invisible in review. */
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/u;
 
-type Ctx = { now: number; clockSkewMs: number };
+type Ctx = { now: number; clockSkewMs: number; maxViolations: number };
 
 /** Returns null when the value is acceptable, or a reason. */
 type Rule = (value: unknown, ctx: Ctx) => string | null;
@@ -135,9 +135,10 @@ function isText(cap: number, { nullable = false } = {}): Rule {
 }
 
 /**
- * A URL field is validated by the collector's own function, not a second copy
- * of the rule. Two definitions of "is this safe to put in an href" drift, and
- * the drift is invisible until one of them is wrong.
+ * A URL field is checked by the same `sanitizeGithubUrl` the collector applies
+ * where the value enters the artifact — the one definition above, not a second
+ * copy of the rule. Two definitions of "is this safe to put in an href" drift,
+ * and the drift is invisible until one of them is wrong.
  */
 const isUrl: Rule = (value) => {
   if (value === null) return null;
@@ -236,9 +237,24 @@ export const SNAPSHOT: Shape = {
 
 // --- walking -------------------------------------------------------------
 
+/**
+ * Records a violation unless the cap is already reached. Nothing is
+ * constructed or stored past the cap, so a hostile artifact — say, a hundred
+ * thousand empty repo objects, each missing every field — costs the capped
+ * caller a bounded amount of memory instead of a string per defect.
+ */
+function report(violations: string[], ctx: Ctx, message: string): void {
+  if (violations.length < ctx.maxViolations) violations.push(message);
+}
+
+function full(violations: string[], ctx: Ctx): boolean {
+  return violations.length >= ctx.maxViolations;
+}
+
 function checkShape(value: unknown, shape: Shape, path: string, violations: string[], ctx: Ctx): void {
+  if (full(violations, ctx)) return;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    violations.push(`${path} must be an object`);
+    report(violations, ctx, `${path} must be an object`);
     return;
   }
 
@@ -251,19 +267,21 @@ function checkShape(value: unknown, shape: Shape, path: string, violations: stri
   // with its value never validated. Prototype-named keys are exactly the ones
   // an attacker reaches for.
   for (const key of Object.keys(value)) {
-    if (!Object.hasOwn(shape, key)) violations.push(`${path}.${key} is not in the published schema`);
+    if (full(violations, ctx)) return;
+    if (!Object.hasOwn(shape, key)) report(violations, ctx, `${path}.${key} is not in the published schema`);
   }
 
   for (const [key, rule] of Object.entries(shape)) {
+    if (full(violations, ctx)) return;
     if (rule === null) continue;
     if (!Object.hasOwn(value, key)) {
-      violations.push(`${path}.${key} is missing`);
+      report(violations, ctx, `${path}.${key} is missing`);
       continue;
     }
     const field = (value as Record<string, unknown>)[key];
     if (typeof rule === 'function') {
       const reason = rule(field, ctx);
-      if (reason) violations.push(`${path}.${key} ${reason}`);
+      if (reason) report(violations, ctx, `${path}.${key} ${reason}`);
     } else {
       checkShape(field, rule, `${path}.${key}`, violations, ctx);
     }
@@ -275,6 +293,15 @@ export type ValidateOptions = {
   requireFresh?: boolean;
   /** See `CLOCK_SKEW_MS`: browsers pass a wider allowance than CI validators. */
   clockSkewMs?: number;
+  /**
+   * Stop recording past this many violations. The default reports everything,
+   * which is right for a CI validator describing a trusted collector's output
+   * — a snapshot that gained three fields should say so once, not across three
+   * runs an hour apart. A browser validating a fetched artifact only needs to
+   * know *whether* it conforms, and materializing a violation per defect of a
+   * hostile payload is an allocation the reader's tab pays for.
+   */
+  maxViolations?: number;
 };
 
 /**
@@ -290,33 +317,39 @@ export type ValidateOptions = {
  */
 export function validateSnapshot(
   snapshot: unknown,
-  { now = Date.now(), requireFresh = false, clockSkewMs = CLOCK_SKEW_MS }: ValidateOptions = {},
+  {
+    now = Date.now(),
+    requireFresh = false,
+    clockSkewMs = CLOCK_SKEW_MS,
+    maxViolations = Infinity,
+  }: ValidateOptions = {},
 ): string[] {
   const violations: string[] = [];
   // One clock for the whole validation. The future check lives in
   // `isTimestamp` — every timestamp field gets it through this context —
   // so this function only owns the check that needs the flag: staleness.
-  const ctx: Ctx = { now, clockSkewMs };
+  const ctx: Ctx = { now, clockSkewMs, maxViolations };
   checkShape(snapshot, SNAPSHOT, 'snapshot', violations, ctx);
 
   const snap = snapshot as { repos?: unknown; generatedAt?: unknown } | null | undefined;
 
   if (!Array.isArray(snap?.repos)) {
-    violations.push('snapshot.repos must be an array');
+    report(violations, ctx, 'snapshot.repos must be an array');
   } else {
-    snap.repos.forEach((repo: unknown, index: number) => {
+    for (const [index, repo] of snap.repos.entries()) {
+      if (full(violations, ctx)) break;
       checkShape(repo, REPO, `snapshot.repos[${index}]`, violations, ctx);
-    });
+    }
 
     const names = snap.repos.map((repo: unknown) => (repo as { name?: unknown } | null)?.name);
     if (new Set(names).size !== names.length) {
-      violations.push('snapshot.repos contains duplicate names');
+      report(violations, ctx, 'snapshot.repos contains duplicate names');
     }
   }
 
   const ts = typeof snap?.generatedAt === 'string' ? Date.parse(snap.generatedAt) : NaN;
   if (Number.isFinite(ts) && requireFresh && now - ts > STALE_MS) {
-    violations.push('snapshot.generatedAt is older than the staleness threshold');
+    report(violations, ctx, 'snapshot.generatedAt is older than the staleness threshold');
   }
 
   return violations;
