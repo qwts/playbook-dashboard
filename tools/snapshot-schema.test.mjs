@@ -238,6 +238,24 @@ test('every timestamp field refuses the future, not just generatedAt', () => {
   );
 });
 
+// The browser runs this same validation on the reader's clock, and end-user
+// machines drift by minutes. A caller that far from the runner widens the
+// allowance explicitly; the default stays tight for CI-side validation.
+test('clock skew is a caller decision, and widening it loosens nothing else', () => {
+  const now = Date.now();
+  const twoMinutesAhead = new Date(now + 2 * 60_000).toISOString();
+  const snapshot = valid({ generatedAt: twoMinutesAhead });
+
+  assert.ok(validateSnapshot(snapshot, { now }).includes('snapshot.generatedAt is in the future'));
+  assert.deepEqual(validateSnapshot(snapshot, { now, clockSkewMs: 5 * 60_000 }), []);
+
+  // The wider skew rescues the honest timestamp, not the leaked field.
+  const withLeak = valid({ generatedAt: twoMinutesAhead, alertTitles: ['RCE in parser'] });
+  assert.deepEqual(validateSnapshot(withLeak, { now, clockSkewMs: 5 * 60_000 }), [
+    'snapshot.alertTitles is not in the published schema',
+  ]);
+});
+
 test('an unparseable timestamp never passes', () => {
   for (const value of ['not a date', '', 42, null, undefined]) {
     const violations = validateSnapshot(valid({ generatedAt: value }));
