@@ -42,6 +42,46 @@ const JSON_HEADERS = {
   'Cache-Control': 'no-store',
 };
 
+/**
+ * Mirrors the `<meta http-equiv>` CSP in index.html — the SPA is
+ * self-contained (no third-party scripts, self-hosted fonts), so everything is
+ * 'self'. The one addition is `frame-ancestors 'none'`: meta CSP cannot
+ * express it, so the header is the only place the dashboard can refuse to be
+ * framed. Keep the two in lockstep when either changes.
+ */
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "font-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+/**
+ * Defense-in-depth headers on every response that leaves the Worker — the
+ * single enforcement point, so proxied Pages responses are covered too.
+ * Applied once at the fetch boundary rather than per return site: eighteen
+ * return sites is eighteen chances to forget one.
+ */
+export function applySecurityHeaders(response: Response): Response {
+  const headers = response.headers;
+  // Auth flows navigate outbound to IdPs; the dashboard's own URL is nobody's
+  // business. Belt to the per-anchor rel="noreferrer" suspenders in the SPA.
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  // The zone does not send HSTS (checked 2026-07); one year, no preload or
+  // includeSubDomains — those are zone-wide commitments this Worker does not
+  // get to make for qwts.org.
+  headers.set('Strict-Transport-Security', 'max-age=31536000');
+  return response;
+}
+
 function json(body: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   for (const [name, value] of Object.entries(JSON_HEADERS)) {
@@ -262,40 +302,46 @@ async function handleGatedData(env: Env, request: Request, url: URL): Promise<Re
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    const { pathname } = url;
+    // Every response funnels through applySecurityHeaders — route() must stay
+    // the only exit so no return site can bypass the headers.
+    return applySecurityHeaders(await route(request, env));
+  },
+} satisfies ExportedHandler<Env>;
 
-    if (pathname === '/auth/login' && request.method === 'GET') {
-      return handleLogin(env, url);
-    }
-    if (pathname === '/auth/exchange' && request.method === 'POST') {
-      return handleExchange(env, request, url);
-    }
-    if (pathname === '/auth/me' && request.method === 'GET') {
-      return handleMe(env, request);
-    }
-    if (pathname === '/auth/logout') {
-      return handleLogout(request, url);
-    }
-    if (pathname.startsWith('/auth/')) {
-      // /auth/callback and anything else under /auth render the SPA shell, which
-      // finishes the exchange client-side.
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        return json({ error: 'method_not_allowed' }, { status: 405 });
-      }
-      const shell = await fetchOrigin(env, request, url, '/index.html');
-      shell.headers.set('Cache-Control', 'no-store');
-      return shell;
-    }
+async function route(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const { pathname } = url;
 
+  if (pathname === '/auth/login' && request.method === 'GET') {
+    return handleLogin(env, url);
+  }
+  if (pathname === '/auth/exchange' && request.method === 'POST') {
+    return handleExchange(env, request, url);
+  }
+  if (pathname === '/auth/me' && request.method === 'GET') {
+    return handleMe(env, request);
+  }
+  if (pathname === '/auth/logout') {
+    return handleLogout(request, url);
+  }
+  if (pathname.startsWith('/auth/')) {
+    // /auth/callback and anything else under /auth render the SPA shell, which
+    // finishes the exchange client-side.
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return json({ error: 'method_not_allowed' }, { status: 405 });
     }
+    const shell = await fetchOrigin(env, request, url, '/index.html');
+    shell.headers.set('Cache-Control', 'no-store');
+    return shell;
+  }
 
-    if (isGatedPath(pathname)) {
-      return handleGatedData(env, request, url);
-    }
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return json({ error: 'method_not_allowed' }, { status: 405 });
+  }
 
-    return fetchOrigin(env, request, url);
-  },
-} satisfies ExportedHandler<Env>;
+  if (isGatedPath(pathname)) {
+    return handleGatedData(env, request, url);
+  }
+
+  return fetchOrigin(env, request, url);
+}
