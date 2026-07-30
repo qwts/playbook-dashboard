@@ -30,7 +30,15 @@ type LoadState =
 type DashboardProps = {
   session: Session | null;
   onSignOut: () => void;
+  /** Session lapsed mid-view — a snapshot refresh came back 401. */
+  onAuthRequired?: () => void;
 };
+
+/** The collector republishes hourly; a pinned tab should notice without a reload. */
+const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
+/** Relative timestamps and the stale pill re-evaluate on this cadence. */
+const CLOCK_TICK_MS = 60 * 1000;
 
 /**
  * A repo name, linked only when the collector published a validated URL.
@@ -110,36 +118,66 @@ function AccountRow({ session, onSignOut }: DashboardProps) {
   );
 }
 
-export function Dashboard({ session, onSignOut }: DashboardProps) {
+export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     const url = `${import.meta.env.BASE_URL}data/snapshot.json`;
     let cancelled = false;
+    // A request that stalls past the next tick overlaps the one that replaces
+    // it, and nothing guarantees the responses resolve in start order. Only
+    // the most recently started request may write state, so a slow response
+    // carrying an older artifact cannot overwrite a newer one.
+    let latestRequest = 0;
 
     // Credentialed so the Worker sees the session cookie on /data/*.
-    fetch(url, { credentials: 'include' })
-      .then(async (response) => {
+    async function load() {
+      const seq = ++latestRequest;
+      try {
+        const response = await fetch(url, { credentials: 'include' });
+        if (cancelled || seq !== latestRequest) return;
+        if (response.status === 401) {
+          // The Worker no longer honors the session. Degrade to sign-in
+          // instead of leaving a stale snapshot up as if it were current.
+          onAuthRequired?.();
+          return;
+        }
         if (!response.ok) {
           throw new Error(`Failed to load snapshot (${response.status})`);
         }
-        return (await response.json()) as Snapshot;
-      })
-      .then((snapshot) => {
-        if (!cancelled) setState({ status: 'ready', snapshot });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setState({
-            status: 'error',
-            message: error instanceof Error ? error.message : 'Failed to load snapshot',
-          });
-        }
-      });
+        const snapshot = (await response.json()) as Snapshot;
+        if (!cancelled && seq === latestRequest) setState({ status: 'ready', snapshot });
+      } catch (error: unknown) {
+        if (cancelled || seq !== latestRequest) return;
+        // A failed refresh keeps the last good snapshot on screen — its own
+        // timestamp says how old it is. Only the initial load renders the
+        // error state, because there is nothing better to show.
+        setState((current) =>
+          current.status === 'ready'
+            ? current
+            : {
+                status: 'error',
+                message: error instanceof Error ? error.message : 'Failed to load snapshot',
+              },
+        );
+      }
+    }
+
+    void load();
+    const timer = window.setInterval(() => void load(), REFRESH_INTERVAL_MS);
 
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
+  }, [onAuthRequired]);
+
+  // Relative labels ("3h ago") and the stale pill drift out of truth in a
+  // long-lived tab if they are computed only at fetch time.
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
+    return () => window.clearInterval(timer);
   }, []);
 
   if (state.status === 'loading') {
@@ -159,7 +197,7 @@ export function Dashboard({ session, onSignOut }: DashboardProps) {
   }
 
   const repos = visibleRepos(state.snapshot);
-  const stale = isSnapshotStale(state.snapshot.generatedAt);
+  const stale = isSnapshotStale(state.snapshot.generatedAt, now);
   const openSecurity = sumOpenSecurity(repos);
   const failing = countCiFailing(repos);
   const missingCi = countMissingCi(repos);
@@ -187,7 +225,7 @@ export function Dashboard({ session, onSignOut }: DashboardProps) {
         </p>
         <div className="meta-row">
           <span className="pill" data-tone={stale ? 'warn' : 'ok'}>
-            snapshot {formatRelative(state.snapshot.generatedAt)}
+            snapshot {formatRelative(state.snapshot.generatedAt, now)}
             {stale ? ' · stale' : ''}
           </span>
           <span
@@ -394,7 +432,7 @@ export function Dashboard({ session, onSignOut }: DashboardProps) {
                       </span>
                     )}
                   </td>
-                  <td className="muted">{formatRelative(repo.ci.updatedAt)}</td>
+                  <td className="muted">{formatRelative(repo.ci.updatedAt, now)}</td>
                 </tr>
               ))}
             </tbody>
