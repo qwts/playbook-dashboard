@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { CiStatus, RepoSnapshot, SecurityCounts, Snapshot } from '../types/snapshot.ts';
 import {
   boolLabel,
+  ciClass,
   ciLabel,
   compareByExposure,
   countByStatus,
@@ -217,13 +218,46 @@ test('CI failures count, but pending and unbuilt repos do not', () => {
   const repos = [
     repo({ name: 'green', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'success', status: 'completed' } }),
     repo({ name: 'red', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'failure', status: 'completed' } }),
-    repo({ name: 'cancelled', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'cancelled', status: 'completed' } }),
+    repo({ name: 'timed-out', ci: { ...NO_CI, workflowName: 'CI', conclusion: 'timed_out', status: 'completed' } }),
     repo({ name: 'running', ci: { ...NO_CI, workflowName: 'CI', conclusion: null, status: 'in_progress' } }),
     repo({ name: 'queued', ci: { ...NO_CI, workflowName: 'CI', conclusion: null, status: 'queued' } }),
     repo({ name: 'no-ci' }),
   ];
 
   assert.equal(countCiFailing(repos), 2);
+});
+
+// #38. A cancelled run says nothing about whether the code passes: counting it
+// as failing inflates the headline stat with verdicts that were never reached.
+test('deliberate no-ops are inconclusive, not failing', () => {
+  const repos = ['cancelled', 'skipped', 'neutral', 'stale'].map((conclusion) =>
+    repo({ name: conclusion, ci: { ...NO_CI, workflowName: 'CI', conclusion, status: 'completed' } }),
+  );
+
+  assert.equal(countCiFailing(repos), 0);
+  for (const r of repos) assert.equal(ciClass(r), 'inconclusive');
+});
+
+// The snapshot is untrusted input: a verdict this code does not recognize
+// cannot be presumed fine, so it stays in the failing count.
+test('an unrecognized conclusion fails closed', () => {
+  const weird = repo({
+    name: 'weird',
+    ci: { ...NO_CI, workflowName: 'CI', conclusion: 'totally_new_verdict', status: 'completed' },
+  });
+
+  assert.equal(ciClass(weird), 'failing');
+  assert.equal(countCiFailing([weird]), 1);
+});
+
+test('a workflow with no verdict is inconclusive, not green or missing', () => {
+  const noVerdict = repo({
+    name: 'no-verdict',
+    ci: { ...NO_CI, workflowName: 'CI', conclusion: null, status: 'completed' },
+  });
+
+  assert.equal(ciClass(noVerdict), 'inconclusive');
+  assert.equal(countCiFailing([noVerdict]), 0);
 });
 
 test('a repo with no workflows is missing CI, not failing it', () => {
