@@ -118,12 +118,18 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
   useEffect(() => {
     const url = `${import.meta.env.BASE_URL}data/snapshot.json`;
     let cancelled = false;
+    // A request that stalls past the next tick overlaps the one that replaces
+    // it, and nothing guarantees the responses resolve in start order. Only
+    // the most recently started request may write state, so a slow response
+    // carrying an older artifact cannot overwrite a newer one.
+    let latestRequest = 0;
 
     // Credentialed so the Worker sees the session cookie on /data/*.
     async function load() {
+      const seq = ++latestRequest;
       try {
         const response = await fetch(url, { credentials: 'include' });
-        if (cancelled) return;
+        if (cancelled || seq !== latestRequest) return;
         if (response.status === 401) {
           // The Worker no longer honors the session. Degrade to sign-in
           // instead of leaving a stale snapshot up as if it were current.
@@ -134,9 +140,9 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
           throw new Error(`Failed to load snapshot (${response.status})`);
         }
         const snapshot = (await response.json()) as Snapshot;
-        if (!cancelled) setState({ status: 'ready', snapshot });
+        if (!cancelled && seq === latestRequest) setState({ status: 'ready', snapshot });
       } catch (error: unknown) {
-        if (cancelled) return;
+        if (cancelled || seq !== latestRequest) return;
         // A failed refresh keeps the last good snapshot on screen — its own
         // timestamp says how old it is. Only the initial load renders the
         // error state, because there is nothing better to show.
