@@ -111,8 +111,15 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run ci
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.23'
+      - name: Install pinned actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Run pinned actionlint
-        uses: rhysd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
+        run: actionlint
 
   codeql:
     name: Advanced CodeQL

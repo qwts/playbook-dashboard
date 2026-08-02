@@ -200,7 +200,9 @@ test('governed CI declares every lifecycle lane and the exact preflight title', 
   assert.match(CI, /cancel-in-progress: \$\{\{ github\.event_name != 'push' \}\}/u);
   assert.match(CI, /uses: qwts\/playbook-engineering\/\.github\/actions\/ci-policy@[0-9a-f]{40}/u);
   assert.match(CI, /display_title == "CI workflow_dispatch purpose=exact-sha-preflight"/u);
-  assert.match(CI, /uses: rhysd\/actionlint@[0-9a-f]{40}/u);
+  assert.match(CI, /uses: actions\/setup-go@[0-9a-f]{40}/u);
+  assert.match(CI, /go install github\.com\/rhysd\/actionlint\/cmd\/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106/u);
+  assert.match(CI, /run: actionlint/u);
   assert.match(CI, /name: CI\n\s+needs: \[policy, merge-evidence, preflight-evidence, complete-suite, codeql, post-merge\]/u);
 });
 
