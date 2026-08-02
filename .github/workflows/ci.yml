@@ -60,7 +60,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$GITHUB_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
           validated=false
           if [ -n "$run_id" ]; then
             validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
@@ -84,7 +84,7 @@ jobs:
           TARGET_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$TARGET_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
           validated=false
           if [ -n "$run_id" ]; then
             validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
