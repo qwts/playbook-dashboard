@@ -33,6 +33,7 @@ jobs:
   # both immutable actor fields and the fork policy have passed.
   policy:
     name: Action Policy
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

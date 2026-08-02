@@ -220,6 +220,7 @@ test('direct Pages and Worker entrypoints authorize before code or credentials',
   assert.match(PAGES, /collect:\n\s+needs: policy\n\s+if: needs\.policy\.result == 'success' && github\.ref == 'refs\/heads\/main'/u);
   assert.match(PAGES, /deploy:\n\s+needs: \[policy, collect, build\]/u);
   assert.match(WORKER, /worker:\n\s+name: Worker\n\s+needs: policy\n\s+if: needs\.policy\.result == 'success'/u);
+  assert.match(WORKER, /policy:\n\s+name: Action Policy\n\s+if: github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false/u);
   assert.match(WORKER, /if: github\.ref == 'refs\/heads\/main'/u);
 });
 
