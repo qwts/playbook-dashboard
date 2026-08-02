@@ -17,6 +17,9 @@ import { test } from 'node:test';
  * runtime dependency to check less.
  */
 const PAGES = readFileSync(new URL('../.github/workflows/pages.yml', import.meta.url), 'utf8');
+const CI = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const WORKER = readFileSync(new URL('../.github/workflows/worker.yml', import.meta.url), 'utf8');
+const CODEQL = readFileSync(new URL('../.github/workflows/codeql.yml', import.meta.url), 'utf8');
 
 /**
  * A file with whole-line comments removed.
@@ -106,7 +109,7 @@ test('every job in every workflow is bounded, so a wedged run cannot hold a runn
   const pagesJobs = [...JOBS.matchAll(/^ {2}([a-z][\w-]*):$/gmu)].map((m) => m[1]);
   assert.deepEqual(
     pagesJobs,
-    ['collect', 'build', 'attest', 'deploy'],
+    ['policy', 'collect', 'build', 'attest', 'deploy'],
     'job list changed — check the bounds',
   );
 
@@ -119,10 +122,15 @@ test('every job in every workflow is bounded, so a wedged run cannot hold a runn
     const jobs = [...jobsBlock.matchAll(/^ {2}([a-z][\w-]*):$/gmu)].map((m) => m[1]);
     assert.ok(jobs.length > 0, `${name}: found no jobs — extraction broke or the file is empty`);
 
-    const timeouts = [...jobsBlock.matchAll(/^ {4}timeout-minutes:\s*(\d+)$/gmu)];
-    assert.equal(timeouts.length, jobs.length, `${name}: every job needs its own timeout-minutes`);
-    for (const [, minutes] of timeouts) {
-      assert.ok(Number(minutes) <= 30, `${name}: ${minutes}m is not a bound worth having`);
+    const jobStarts = [...jobsBlock.matchAll(/^ {2}([a-z][\w-]*):$/gmu)];
+    for (let i = 0; i < jobStarts.length; i += 1) {
+      const start = jobStarts[i].index;
+      const end = jobStarts[i + 1]?.index ?? jobsBlock.length;
+      const job = jobsBlock.slice(start, end);
+      const timeout = /^ {4}timeout-minutes:\s*(\d+)$/mu.exec(job);
+      if (!timeout && /\n\s+uses:\s+\.\/\.github\/workflows\//u.test(job)) continue;
+      assert.ok(timeout, `${name}: every executable job needs its own timeout-minutes`);
+      assert.ok(Number(timeout[1]) <= 30, `${name}: ${timeout[1]}m is not a bound worth having`);
     }
   }
 });
@@ -174,11 +182,55 @@ test('no expression is interpolated into a run script, in any workflow', () => {
 });
 
 test('third-party actions are pinned to a commit sha', () => {
-  const uses = [...STRUCTURE.matchAll(/uses:\s*(\S+)/gu)].map((m) => m[1]);
-  assert.ok(uses.length >= 6, `expected the action list, found ${uses.length}`);
-  for (const ref of uses) {
-    assert.match(ref, /@[0-9a-f]{40}$/u, `${ref} is not pinned to a full commit sha`);
+  let total = 0;
+  for (const [name, structure] of WORKFLOWS) {
+    const uses = [...structure.matchAll(/uses:\s*(\S+)/gu)].map((m) => m[1]);
+    total += uses.length;
+    for (const ref of uses) {
+      if (ref.startsWith('./')) continue;
+      assert.match(ref, /@[0-9a-f]{40}$/u, `${name}: ${ref} is not pinned to a full commit sha`);
+    }
   }
+  assert.ok(total >= 10, `expected the action list, found ${total}`);
+});
+
+test('governed CI declares every lifecycle lane and the exact preflight title', () => {
+  assert.match(CI, /run-name: CI \$\{\{ github\.event_name \}\} purpose=\$\{\{ inputs\.purpose \|\| 'automatic' \}\}/u);
+  assert.match(CI, /merge_group:\n\s+types: \[checks_requested\]/u);
+  assert.match(CI, /cancel-in-progress: \$\{\{ github\.event_name != 'push' \}\}/u);
+  assert.match(CI, /uses: qwts\/playbook-engineering\/\.github\/actions\/ci-policy@[0-9a-f]{40}/u);
+  assert.match(CI, /display_title == "CI workflow_dispatch purpose=exact-sha-preflight"/u);
+  assert.match(CI, /uses: actions\/setup-go@[0-9a-f]{40}/u);
+  assert.match(CI, /go install github\.com\/rhysd\/actionlint\/cmd\/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106/u);
+  assert.match(CI, /run: actionlint/u);
+  assert.match(CI, /name: CI\n\s+needs: \[policy, merge-evidence, preflight-evidence, complete-suite, codeql, post-merge\]/u);
+});
+
+test('direct Pages and Worker entrypoints authorize before code or credentials', () => {
+  for (const [name, source, privileged] of [
+    ['pages.yml', PAGES, ['actions/deploy-pages', 'attest-build-provenance', 'FLEET_DASHBOARD_TOKEN']],
+    ['worker.yml', WORKER, ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID']],
+  ]) {
+    const structure = structureOf(source);
+    const policy = structure.indexOf('uses: qwts/playbook-engineering/.github/actions/ci-policy@');
+    assert.ok(policy >= 0, `${name}: missing policy action`);
+    assert.match(structure, /authorization-only: true/u, `${name}: direct entrypoint must use authorization-only mode`);
+    for (const marker of privileged) {
+      assert.ok(structure.indexOf(marker) > policy, `${name}: ${marker} is reachable before policy`);
+    }
+  }
+  assert.match(PAGES, /collect:\n\s+needs: policy\n\s+if: needs\.policy\.result == 'success' && github\.ref == 'refs\/heads\/main'/u);
+  assert.match(PAGES, /deploy:\n\s+needs: \[policy, collect, build\]/u);
+  assert.match(WORKER, /worker:\n\s+name: Worker\n\s+needs: policy\n\s+if: needs\.policy\.result == 'success'/u);
+  assert.match(WORKER, /policy:\n\s+name: Action Policy\n\s+if: github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false/u);
+  assert.match(WORKER, /if: github\.ref == 'refs\/heads\/main'/u);
+});
+
+test('Advanced CodeQL is reusable and covers both governed languages', () => {
+  assert.match(CODEQL, /workflow_call:/u);
+  assert.match(CODEQL, /language: \[actions, javascript-typescript\]/u);
+  assert.match(CI, /uses: \.\/\.github\/workflows\/codeql\.yml/u);
+  assert.match(CI, /security-events: write/u);
 });
 
 // Least privilege is the property most easily lost to a passing build: widening

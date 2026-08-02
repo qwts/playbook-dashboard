@@ -1,37 +1,197 @@
 name: CI
+run-name: CI ${{ github.event_name }} purpose=${{ inputs.purpose || 'automatic' }}
 
 on:
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      purpose:
+        description: Why the complete suite is being run manually
+        required: true
+        type: choice
+        options:
+          - exact-sha-preflight
+          - diagnostics
+          - release-recovery
+          - workflow-testing
+          - explicit-rerun
 
-permissions: {}
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('merge-group-{0}', github.event.merge_group.head_ref) || github.sha }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  ci:
-    name: CI
+  policy:
+    name: Action Policy
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    # ~2 minutes in practice. Lower stakes than pages.yml — no credential, no
-    # shared concurrency group — but the default is still six hours of runner
-    # for a hung install, and DESIGN.md promises every job a bound.
-    timeout-minutes: 10
-    permissions:
-      contents: read
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.policy.outputs.mode }}
+      run_full: ${{ steps.policy.outputs.run_full }}
+      run_post_merge: ${{ steps.policy.outputs.run_post_merge }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - id: policy
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+
+  merge-evidence:
+    name: Verify merged commit evidence
+    needs: policy
+    if: needs.policy.outputs.run_post_merge == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      validated: ${{ steps.evidence.outputs.validated }}
+    steps:
+      - id: evidence
+        name: Find successful merge-group CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$GITHUB_SHA&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+          validated=false
+          if [ -n "$run_id" ]; then
+            validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+              --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          fi
+          echo "validated=$validated" >> "$GITHUB_OUTPUT"
+
+  preflight-evidence:
+    name: Verify preflight evidence
+    needs: policy
+    if: github.event_name == 'pull_request' && needs.policy.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      validated: ${{ steps.evidence.outputs.validated }}
+    steps:
+      - id: evidence
+        name: Find successful exact-SHA preflight for the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$TARGET_SHA&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
+          validated=false
+          if [ -n "$run_id" ]; then
+            validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+              --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          fi
+          echo "validated=$validated" >> "$GITHUB_OUTPUT"
+
+  complete-suite:
+    name: Complete suite
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # Nothing after checkout uses the git credential; persisting it writes
-          # GITHUB_TOKEN into .git/config for every later step to read.
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
           cache: npm
-      # This job runs the test suite, which is the repo's own code — but the
-      # install itself does not need to execute dependency lifecycle scripts.
       - run: npm ci --ignore-scripts
       - run: npm run ci
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.23'
+      - name: Install pinned actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Run pinned actionlint
+        run: actionlint
+
+  codeql:
+    name: Advanced CodeQL
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      (needs.policy.outputs.run_post_merge == 'true' ||
+      (needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true'))
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  post-merge:
+    name: Post-merge smoke
+    needs: [policy, merge-evidence]
+    if: needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run validate
+      - run: npm run build
+
+  gate:
+    name: CI
+    needs: [policy, merge-evidence, preflight-evidence, complete-suite, codeql, post-merge]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce the selected lifecycle lane
+        env:
+          MODE: ${{ needs.policy.outputs.mode }}
+          POLICY: ${{ needs.policy.result }}
+          COMPLETE: ${{ needs.complete-suite.result }}
+          CODEQL: ${{ needs.codeql.result }}
+          PREFLIGHT: ${{ needs.preflight-evidence.result }}
+          PREFLIGHT_VALIDATED: ${{ needs.preflight-evidence.outputs.validated }}
+          MERGE_VALIDATED: ${{ needs.merge-evidence.outputs.validated }}
+          POST_MERGE: ${{ needs.post-merge.result }}
+        run: |
+          test "$POLICY" = success
+          case "$MODE" in
+            full)
+              if [ "$PREFLIGHT_VALIDATED" = true ]; then
+                test "$PREFLIGHT" = success
+              else
+                test "$COMPLETE" = success
+                test "$CODEQL" = success
+              fi
+              ;;
+            queue|manual)
+              test "$COMPLETE" = success
+              test "$CODEQL" = success
+              ;;
+            post-merge)
+              test "$CODEQL" = success
+              if [ "$MERGE_VALIDATED" = true ]; then
+                test "$POST_MERGE" = success
+              else
+                test "$COMPLETE" = success
+              fi
+              ;;
+            *) exit 1 ;;
+          esac
