@@ -28,8 +28,26 @@ defaults:
     working-directory: workers/dashboard-auth
 
 jobs:
+  # Authorization is the first job and has no checkout or deployment secret.
+  # The Worker job cannot reach its source or Cloudflare credentials unless
+  # both immutable actor fields and the fork policy have passed.
+  policy:
+    name: Action Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - id: policy
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+        with:
+          authorization-only: true
+
   worker:
     name: Worker
+    needs: policy
+    if: needs.policy.result == 'success'
     runs-on: ubuntu-latest
     # A typecheck and a single script upload. The default is six hours of
     # runner for a hung install, and DESIGN.md promises every job a bound.

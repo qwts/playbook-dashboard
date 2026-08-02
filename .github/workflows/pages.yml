@@ -25,10 +25,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Authorization runs before any checkout, environment, credential, OIDC, or
+  # Pages capability is reachable. This direct workflow has no lifecycle lane;
+  # it only needs the immutable actor and fork policy.
+  policy:
+    name: Action Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - id: policy
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+        with:
+          authorization-only: true
+
   # Holds FLEET_DASHBOARD_TOKEN. `contents: read` and nothing more: no
   # pages:write to deploy with, and no id-token:write to mint an OIDC token
   # asserting this repository's identity.
   collect:
+    needs: policy
+    if: needs.policy.result == 'success' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # ~2 minutes in practice, and every request inside it already carries its own
     # 10s deadline. This bounds the shapes that deadline cannot: a wedged runner,
@@ -142,7 +160,8 @@ jobs:
   # execution and does nothing about *build*-time execution, which is the whole
   # purpose of a bundler. Attestation moved to its own job; see `attest`.
   build:
-    needs: collect
+    needs: [policy, collect]
+    if: needs.policy.result == 'success' && needs.collect.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -205,7 +224,8 @@ jobs:
   # not a nicety. Provenance, not freshness — a red run attests its fixture
   # honestly. See DESIGN.md.
   attest:
-    needs: build
+    needs: [policy, build]
+    if: needs.policy.result == 'success' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -226,7 +246,8 @@ jobs:
 
   # Holds the Pages grants and nothing else — no PAT, no checkout, no npm.
   deploy:
-    needs: [collect, build]
+    needs: [policy, collect, build]
+    if: needs.policy.result == 'success' && needs.collect.result == 'success' && needs.build.result == 'success' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
