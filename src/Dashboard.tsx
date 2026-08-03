@@ -73,54 +73,40 @@ function toneForCi(repo: RepoSnapshot): Tone {
 }
 
 function FloorBits({ repo }: { repo: RepoSnapshot }) {
-  const bits: Array<[string, boolean | null | string]> = [
-    ['secrets', repo.securityFloor.secretScanning],
-    ['push', repo.securityFloor.pushProtection],
-    ['dependabot', repo.securityFloor.dependabotAlerts],
-    ['pvr', repo.securityFloor.privateVulnerabilityReporting],
-    ['codeql', repo.securityFloor.codeqlSetup],
-    ['ruleset', repo.securityFloor.defaultBranchRuleset],
+  const floor = repo.securityFloor;
+  type Bit = { key: string; label: string; tone: Tone; title: string };
+
+  const flag = (key: string, value: boolean | null): Bit => ({
+    key,
+    label: boolLabel(value),
+    tone: value === true ? 'ok' : value === false ? 'danger' : 'muted',
+    title: `${key}: ${boolLabel(value)}`,
+  });
+
+  const codeqlLabel = floor.codeqlSetup ?? '?';
+  const codeql: Bit = {
+    key: 'codeql',
+    label: codeqlLabel,
+    tone: floor.codeqlSetup === 'default' || floor.codeqlSetup === 'advanced' ? 'ok' : floor.codeqlSetup === 'none' ? 'danger' : 'muted',
+    title: `codeql: ${codeqlLabel}${floor.codeqlLastAnalysisAt ? ` (last: ${new Date(floor.codeqlLastAnalysisAt).toLocaleDateString()})` : ''}`,
+  };
+
+  const bits: Bit[] = [
+    flag('secrets', floor.secretScanning),
+    flag('push', floor.pushProtection),
+    flag('dependabot', floor.dependabotAlerts),
+    flag('pvr', floor.privateVulnerabilityReporting),
+    codeql,
+    flag('ruleset', floor.defaultBranchRuleset),
   ];
-
-  const codeqlLabel = (value: unknown): string => {
-    if (value === 'default' || value === 'advanced') return value;
-    if (value === 'none') return 'none';
-    return '?';
-  };
-
-  const codeqlTone = (value: unknown): Tone => {
-    if (value === 'default' || value === 'advanced') return 'ok';
-    if (value === 'none') return 'danger';
-    return 'muted';
-  };
-
-  const codeqlTitle = (value: unknown, lastAnalysisAt: string | null): string => {
-    const base = `codeql: ${codeqlLabel(value)}`;
-    if (lastAnalysisAt) {
-      const date = new Date(lastAnalysisAt).toLocaleDateString();
-      return `${base} (last: ${date})`;
-    }
-    return base;
-  };
 
   return (
     <div className="floor-grid">
-      {bits.map(([key, value]) => {
-        const isCodeql = key === 'codeql';
-        const tone = isCodeql ? codeqlTone(value) : value === true ? 'ok' : value === false ? 'danger' : 'muted';
-        const label = isCodeql ? codeqlLabel(value) : boolLabel(value as boolean | null);
-        const title = isCodeql ? codeqlTitle(value, repo.securityFloor.codeqlLastAnalysisAt) : `${key}: ${boolLabel(value as boolean | null)}`;
-        return (
-          <span
-            key={key}
-            className="badge"
-            data-tone={tone}
-            title={title}
-          >
-            {key}:{label}
-          </span>
-        );
-      })}
+      {bits.map((bit) => (
+        <span key={bit.key} className="badge" data-tone={bit.tone} title={bit.title}>
+          {bit.key}:{bit.label}
+        </span>
+      ))}
     </div>
   );
 }

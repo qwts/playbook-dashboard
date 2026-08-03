@@ -19,10 +19,6 @@
  *
  * Auth: GITHUB_TOKEN or GH_TOKEN (fine-grained: Contents read on playbook,
  * Metadata + Security events / Dependabot alerts / Actions on governed repos).
- *
- * Rate budget: roughly 70 requests an hour against a budget of 5,000. One request
- * per repo for the CodeQL analyses endpoint replaces the previous default-setup
- * read; the total improves slightly.
  */
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -315,10 +311,22 @@ export async function countOpenAlerts(repo, kind) {
  * - `dynamic/github-code-scanning/` prefix = default setup
  * - workflow path (e.g. `.github/workflows/ci.yml:analyze`) = advanced setup
  *
+ * But this is the *code scanning* endpoint, not the CodeQL endpoint: any SARIF
+ * producer (Semgrep, Trivy, Snyk) uploads analyses with a workflow-path
+ * `analysis_key`, and classifying on the key alone would read a repo running
+ * Semgrep and no CodeQL at all as an advanced CodeQL setup — a false green on a
+ * security floor bit. Entries are filtered on `tool.name === 'CodeQL'` first,
+ * and a page containing only non-CodeQL tools reads as `'none'`.
+ *
  * Returns `{ codeqlSetup, codeqlLastAnalysisAt }` where:
  * - `codeqlSetup` is `'advanced' | 'default' | 'none' | null`
- * - `codeqlLastAnalysisAt` is the ISO timestamp of the most recent analysis on the
- *   default branch, or `null` when the list is empty or the field is absent/malformed.
+ * - `codeqlLastAnalysisAt` is the ISO timestamp of the most recent CodeQL
+ *   analysis on the default branch, or `null` when none carries a parseable one.
+ *
+ * A non-empty page in which *no* entry carries a usable `analysis_key` is
+ * corruption, not absence, and reads as `null` — `'none'` is load-bearing
+ * (`degradedReasons` lets it excuse a failed `codeScanningOpen` read), so a
+ * garbled body must make the run louder, never quieter.
  *
  * Tradeoff accepted knowingly: a newly added workflow that has not run yet reads as
  * `'none'` until its first analysis lands. This is correct — a workflow that has
@@ -331,12 +339,17 @@ export function codeqlSetupFrom(analyses) {
 
   let hasAdvanced = false;
   let hasDefault = false;
+  let sawCodeql = false;
+  let sawUsableKey = false;
   let latestAnalysisAt = null;
 
   for (const entry of analyses) {
-    const key = entry?.analysis_key;
-    if (typeof key === 'string') {
-      if (key.startsWith('dynamic/github-code-scanning/')) {
+    if (typeof entry?.analysis_key === 'string') sawUsableKey = true;
+    if (entry?.tool?.name !== 'CodeQL') continue;
+    sawCodeql = true;
+
+    if (typeof entry.analysis_key === 'string') {
+      if (entry.analysis_key.startsWith('dynamic/github-code-scanning/')) {
         hasDefault = true;
       } else {
         hasAdvanced = true;
@@ -353,6 +366,11 @@ export function codeqlSetupFrom(analyses) {
       }
     }
   }
+
+  // Shapeless entries: corruption, unknown — never the load-bearing `'none'`.
+  if (!sawUsableKey) return { codeqlSetup: null, codeqlLastAnalysisAt: null };
+  // Only non-CodeQL tools on the page: the endpoint answered, and CodeQL is absent.
+  if (!sawCodeql) return { codeqlSetup: 'none', codeqlLastAnalysisAt: null };
 
   const codeqlSetup = hasAdvanced ? 'advanced' : hasDefault ? 'default' : 'none';
   const codeqlLastAnalysisAt = latestAnalysisAt !== null ? new Date(latestAnalysisAt).toISOString() : null;
@@ -397,6 +415,11 @@ async function fetchSecurityFloor(repo, detail, defaultBranch) {
       codeqlLastAnalysisAt = derived.codeqlLastAnalysisAt;
     }
   } else if (analyses.status === 404) {
+    // Carried over from the default-setup read this replaced: a 404 conflates
+    // "no analyses on this branch" with "code scanning not enabled for the
+    // token at all". Both are owner-chosen absence rather than a failed read,
+    // but the second now also feeds the 'none' excuse in `degradedReasons` —
+    // noted so the conflation is a decision on record, not an accident.
     codeqlSetup = 'none';
     codeqlLastAnalysisAt = null;
   } else if (analyses.status === 403) {
@@ -894,10 +917,12 @@ export function degradedReasons(snapshot) {
       unknown += 1;
     }
     for (const [key, value] of Object.entries(floor)) {
-      // `codeqlSetup` is an enum; unknown is `null`. Other floor fields are booleans.
+      // `codeqlSetup` is a closed enum: anything outside it — `null`, a stale
+      // boolean from an old artifact, a corrupted string — is unreadable, the
+      // same catch-all the booleans get from `typeof !== 'boolean'`.
       // `codeqlLastAnalysisAt` is informational only and does not feed degradation.
       if (key === 'codeqlSetup') {
-        if (value === null) unknown += 1;
+        if (value !== 'default' && value !== 'advanced' && value !== 'none') unknown += 1;
       } else if (key === 'codeqlLastAnalysisAt') {
         continue;
       } else {

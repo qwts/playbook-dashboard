@@ -161,30 +161,27 @@ export function floorCoverage(repos: RepoSnapshot[]): FloorCoverage {
   let unknown = 0;
 
   for (const repo of repos) {
-    const bits = [
+    // The snapshot is untrusted input, checked field-by-field rather than
+    // flattened: only a literal `true` is a met boolean bit, and only a member
+    // of the closed enum is a met `codeqlSetup`. A corrupted enum value is
+    // unknown — never silently met, and never silently ignored — matching the
+    // answer `degradedReasons` gives for the same field.
+    const boolBits = [
       repo.securityFloor?.secretScanning,
       repo.securityFloor?.pushProtection,
       repo.securityFloor?.dependabotAlerts,
       repo.securityFloor?.privateVulnerabilityReporting,
-      repo.securityFloor?.codeqlSetup,
       repo.securityFloor?.defaultBranchRuleset,
     ];
-    // The snapshot is untrusted input: only a literal `true` is a met bit,
-    // and anything that is neither literal boolean is an unread one.
-    // For `codeqlSetup`, `'default'` or `'advanced'` is met, `'none'` is unmet,
-    // `null` is unknown.
-    const isMet = (bit: unknown): boolean => {
-      if (bit === true) return true;
-      if (bit === 'default' || bit === 'advanced') return true;
-      return false;
-    };
-    const isUnknown = (bit: unknown): boolean => {
-      if (bit === null) return true;
-      if (typeof bit !== 'boolean' && bit !== 'default' && bit !== 'advanced' && bit !== 'none') return true;
-      return false;
-    };
-    if (bits.every(isMet)) complete += 1;
-    else if (bits.some(isUnknown)) unknown += 1;
+    const codeqlSetup = repo.securityFloor?.codeqlSetup;
+
+    const boolsMet = boolBits.every((bit) => bit === true);
+    const boolsUnknown = boolBits.some((bit) => typeof bit !== 'boolean');
+    const codeqlMet = codeqlSetup === 'default' || codeqlSetup === 'advanced';
+    const codeqlUnknown = codeqlSetup !== 'default' && codeqlSetup !== 'advanced' && codeqlSetup !== 'none';
+
+    if (boolsMet && codeqlMet) complete += 1;
+    else if (boolsUnknown || codeqlUnknown) unknown += 1;
   }
 
   return { complete, unknown, total: repos.length };

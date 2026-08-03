@@ -41,9 +41,6 @@ export const MAX_WORKFLOW_NAME_LENGTH = 128;
 /** The only origin the published dashboard will ever emit a link to. */
 export const ALLOWED_URL_ORIGIN = 'https://github.com';
 
-/** Exported for tests. */
-export { isCodeqlSetup };
-
 /**
  * A URL reaches the snapshot only if it is `https:` at exactly
  * `https://github.com`. Everything else becomes `null`, and the UI renders
