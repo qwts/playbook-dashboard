@@ -22,6 +22,7 @@ import {
 } from './lib/aggregate';
 import type { Tone } from './lib/aggregate';
 import { PROVIDER_LABELS, type Session } from './lib/auth';
+import { Review } from './Review';
 import { validateSnapshot } from './lib/snapshot-schema.ts';
 import type { RepoSnapshot, Snapshot } from './types/snapshot';
 
@@ -330,6 +331,14 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
           </div>
         </div>
       </section>
+
+      {/* Renders nothing at all for a session that is not on the allowlist —
+          the panel is the one part of this page that is not the same for
+          everyone, and it reads live GitHub state that never enters the
+          snapshot. */}
+      {session ? (
+        <Review session={session} onReauthRequired={onAuthRequired ?? (() => {})} />
+      ) : null}
 
       <section className="section">
         <header>

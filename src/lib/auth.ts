@@ -14,6 +14,15 @@ export type Session = {
   login: string | null;
   email: string | null;
   expiresAt: number;
+  /** On the Worker's allowlist, so the review panel may render at all. */
+  admin: boolean;
+  /**
+   * An action would actually reach GitHub — admin, signed in with GitHub, and
+   * holding a live actor token. Distinct from `admin` because an admin signed
+   * in with Apple or Google is an admin who cannot act, and the panel should
+   * say which of the two it is rather than fail on click.
+   */
+  privileged: boolean;
 };
 
 export type CallbackResult = {
@@ -150,6 +159,10 @@ export async function fetchSession(): Promise<Session | null> {
     login: payload.login ?? null,
     email: payload.email ?? null,
     expiresAt: payload.expiresAt,
+    // Both default to false: a response that does not say you are privileged
+    // is not a response that says you are.
+    admin: payload.admin === true,
+    privileged: payload.privileged === true,
   };
 }
 

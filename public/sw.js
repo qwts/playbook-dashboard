@@ -189,6 +189,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Privileged requests pass straight through, stated rather than incidental.
+  // A script this file's own header calls bypassable has no business standing
+  // between an action and the Worker that records it, and nothing under
+  // /admin/* may be cached, retried, or replayed by anything but the caller.
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return;
+
   if (isGated(url.pathname)) {
     event.respondWith(gatedFetch(request));
   }

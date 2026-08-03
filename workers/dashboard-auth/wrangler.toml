@@ -11,19 +11,48 @@ workers_dev = false
 pattern = "dashboard.qwts.org/*"
 zone_name = "qwts.org"
 
+# Identity records, actor tokens, and the audit log. Create it once with
+# `wrangler d1 create playbook-dashboard-auth`, paste the id below, then apply
+# `schema.sql`. Leaving the placeholder fails the deploy, which is the intended
+# outcome: without this binding there are no privileged actions at all.
+[[d1_databases]]
+binding = "DB"
+database_name = "playbook-dashboard-auth"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
 [vars]
 # Empty = pass through to the zone origin (correct for CF-proxied GitHub Pages).
 # Set to a full origin (e.g. https://local.dev.zts1.com:8443) for `wrangler dev`.
 PAGES_ORIGIN = ""
 SESSION_TTL_SECONDS = "28800"
 
+# Owners a privileged action may name. The App installation is the real
+# boundary; this is the cheap check in front of it.
+ALLOWED_OWNERS = "qwts"
+
+# A session may read for SESSION_TTL_SECONDS and act for this long. Acting on
+# an eight-hour-old cookie is the case this refuses.
+PRIVILEGED_MAX_AGE_SECONDS = "3600"
+
+# Privileged attempts per identity per minute, counted from the audit log.
+PRIVILEGED_RATE_LIMIT = "10"
+
 # Secrets (wrangler secret put <NAME>) — never commit these:
 #   SESSION_SECRET        random 32+ byte string, signs session and tx cookies
-#   GITHUB_CLIENT_ID      GitHub OAuth App client id
-#   GITHUB_CLIENT_SECRET  GitHub OAuth App client secret
+#   GITHUB_CLIENT_ID      GitHub *App* client id (not an OAuth App — see below)
+#   GITHUB_CLIENT_SECRET  GitHub App client secret
 #   APPLE_CLIENT_ID       Apple Services ID (e.g. com.zts1.dashboard.web)
 #   APPLE_TEAM_ID         Apple Developer team id
 #   APPLE_KEY_ID          Apple Sign In key id (.p8 key id)
 #   APPLE_PRIVATE_KEY     Contents of the AuthKey_XXXX.p8 (PKCS8 PEM)
 #   GOOGLE_CLIENT_ID      Google OAuth 2.0 Web application client id
 #   GOOGLE_CLIENT_SECRET  Google OAuth 2.0 Web application client secret
+#   TOKEN_ENCRYPTION_KEY  random 32+ byte string, seals actor tokens in D1
+#   ADMIN_SUBJECTS        space/comma separated provider:subject pairs, e.g.
+#                         "github:1234567" — unset means nobody is privileged
+#
+# GITHUB_CLIENT_ID must belong to a GitHub App with "Pull requests: read and
+# write", "expire user authorization tokens" enabled, and a callback of
+# https://dashboard.qwts.org/auth/callback. An OAuth App's credentials still
+# sign people in, and every privileged call then fails at GitHub — the App is
+# what makes the token expire, refresh, and stay inside its installation.
