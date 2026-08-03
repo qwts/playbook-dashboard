@@ -166,13 +166,25 @@ export function floorCoverage(repos: RepoSnapshot[]): FloorCoverage {
       repo.securityFloor?.pushProtection,
       repo.securityFloor?.dependabotAlerts,
       repo.securityFloor?.privateVulnerabilityReporting,
-      repo.securityFloor?.codeqlConfigured,
+      repo.securityFloor?.codeqlSetup,
       repo.securityFloor?.defaultBranchRuleset,
     ];
     // The snapshot is untrusted input: only a literal `true` is a met bit,
     // and anything that is neither literal boolean is an unread one.
-    if (bits.every((bit) => bit === true)) complete += 1;
-    else if (bits.some((bit) => typeof bit !== 'boolean')) unknown += 1;
+    // For `codeqlSetup`, `'default'` or `'advanced'` is met, `'none'` is unmet,
+    // `null` is unknown.
+    const isMet = (bit: unknown): boolean => {
+      if (bit === true) return true;
+      if (bit === 'default' || bit === 'advanced') return true;
+      return false;
+    };
+    const isUnknown = (bit: unknown): boolean => {
+      if (bit === null) return true;
+      if (typeof bit !== 'boolean' && bit !== 'default' && bit !== 'advanced' && bit !== 'none') return true;
+      return false;
+    };
+    if (bits.every(isMet)) complete += 1;
+    else if (bits.some(isUnknown)) unknown += 1;
   }
 
   return { complete, unknown, total: repos.length };

@@ -42,7 +42,8 @@ function repo(overrides = {}) {
       pushProtection: true,
       dependabotAlerts: true,
       privateVulnerabilityReporting: true,
-      codeqlConfigured: false,
+      codeqlSetup: 'none',
+      codeqlLastAnalysisAt: null,
       defaultBranchRuleset: true,
     },
     security: { dependabotOpen: 0, codeScanningOpen: 1, secretScanningOpen: 0 },
@@ -198,6 +199,54 @@ test('only a repo observed public may be in the artifact at all', () => {
     assert.ok(
       violations.some((v) => v.startsWith('snapshot.repos[0].visibility')),
       `visibility ${JSON.stringify(visibility)} must not be publishable`,
+    );
+  }
+});
+
+test('codeqlSetup is a closed enum or null', () => {
+  const validValues = ['default', 'advanced', 'none', null];
+  for (const value of validValues) {
+    assert.deepEqual(
+      validateSnapshot(valid({ repos: [repo({ securityFloor: { ...repo().securityFloor, codeqlSetup: value } })] })),
+      [],
+      `${JSON.stringify(value)} should be valid`,
+    );
+  }
+
+  const invalidValues = ['configured', 'CodeQL exists', 'true', 'false', 1, {}, []];
+  for (const value of invalidValues) {
+    const violations = validateSnapshot(
+      valid({ repos: [repo({ securityFloor: { ...repo().securityFloor, codeqlSetup: value } })] }),
+    );
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.repos[0].securityFloor.codeqlSetup')),
+      `${JSON.stringify(value)} should be rejected`,
+    );
+  }
+});
+
+test('codeqlLastAnalysisAt is a timestamp or null', () => {
+  const validTimestamp = new Date().toISOString();
+  assert.deepEqual(
+    validateSnapshot(
+      valid({ repos: [repo({ securityFloor: { ...repo().securityFloor, codeqlLastAnalysisAt: validTimestamp } })] }),
+    ),
+    [],
+  );
+
+  assert.deepEqual(
+    validateSnapshot(valid({ repos: [repo({ securityFloor: { ...repo().securityFloor, codeqlLastAnalysisAt: null } })] })),
+    [],
+  );
+
+  const invalidValues = ['not a timestamp', 123, {}, []];
+  for (const value of invalidValues) {
+    const violations = validateSnapshot(
+      valid({ repos: [repo({ securityFloor: { ...repo().securityFloor, codeqlLastAnalysisAt: value } })] }),
+    );
+    assert.ok(
+      violations.some((v) => v.startsWith('snapshot.repos[0].securityFloor.codeqlLastAnalysisAt')),
+      `${JSON.stringify(value)} should be rejected`,
     );
   }
 });

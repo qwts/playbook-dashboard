@@ -44,7 +44,8 @@ function repo(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
       pushProtection: true,
       dependabotAlerts: true,
       privateVulnerabilityReporting: true,
-      codeqlConfigured: true,
+      codeqlSetup: 'advanced',
+      codeqlLastAnalysisAt: '2026-07-26T12:00:00.000Z',
       defaultBranchRuleset: true,
     },
     security: { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0 },
@@ -397,11 +398,23 @@ test('floor coverage counts only repos with every bit literally true', () => {
     }),
     repo({
       name: 'one-unread',
-      securityFloor: { ...repo().securityFloor, codeqlConfigured: null },
+      securityFloor: { ...repo().securityFloor, codeqlSetup: null },
     }),
   ];
 
   assert.deepEqual(floorCoverage(repos), { complete: 1, unknown: 1, total: 3 });
+});
+
+test('codeqlSetup enum values map correctly to met/unmet/unknown', () => {
+  const advanced = repo({ securityFloor: { ...repo().securityFloor, codeqlSetup: 'advanced' } });
+  const defaultSetup = repo({ securityFloor: { ...repo().securityFloor, codeqlSetup: 'default' } });
+  const none = repo({ securityFloor: { ...repo().securityFloor, codeqlSetup: 'none' } });
+  const unknown = repo({ securityFloor: { ...repo().securityFloor, codeqlSetup: null } });
+
+  assert.deepEqual(floorCoverage([advanced]), { complete: 1, unknown: 0, total: 1 });
+  assert.deepEqual(floorCoverage([defaultSetup]), { complete: 1, unknown: 0, total: 1 });
+  assert.deepEqual(floorCoverage([none]), { complete: 0, unknown: 0, total: 1 });
+  assert.deepEqual(floorCoverage([unknown]), { complete: 0, unknown: 1, total: 1 });
 });
 
 test('an unread floor bit can never count as met', () => {

@@ -23,7 +23,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": true,
+        "codeqlSetup": "advanced",
+        "codeqlLastAnalysisAt": "2026-07-26T17:30:00.000Z",
         "defaultBranchRuleset": true
       },
       "security": {
@@ -52,7 +53,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": true,
+        "codeqlSetup": "advanced",
+        "codeqlLastAnalysisAt": "2026-07-26T16:45:00.000Z",
         "defaultBranchRuleset": true
       },
       "security": {
@@ -81,7 +83,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": true,
+        "codeqlSetup": "advanced",
+        "codeqlLastAnalysisAt": "2026-07-26T15:10:00.000Z",
         "defaultBranchRuleset": true
       },
       "security": {
@@ -110,7 +113,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": true,
+        "codeqlSetup": "advanced",
+        "codeqlLastAnalysisAt": "2026-07-26T14:00:00.000Z",
         "defaultBranchRuleset": true
       },
       "security": {
@@ -139,7 +143,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": true,
+        "codeqlSetup": "none",
+        "codeqlLastAnalysisAt": null,
         "defaultBranchRuleset": true
       },
       "security": {
@@ -168,7 +173,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": false,
+        "codeqlSetup": "default",
+        "codeqlLastAnalysisAt": "2026-07-26T12:00:00.000Z",
         "defaultBranchRuleset": true
       },
       "security": {
@@ -197,7 +203,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": false,
+        "codeqlSetup": "none",
+        "codeqlLastAnalysisAt": null,
         "defaultBranchRuleset": true
       },
       "security": {
@@ -226,7 +233,8 @@
         "pushProtection": true,
         "dependabotAlerts": true,
         "privateVulnerabilityReporting": true,
-        "codeqlConfigured": false,
+        "codeqlSetup": "none",
+        "codeqlLastAnalysisAt": null,
         "defaultBranchRuleset": true
       },
       "security": {

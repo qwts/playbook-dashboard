@@ -29,6 +29,7 @@ import {
   resetRateLimitWindow,
   rateLimitWindowIsOpen,
   MAX_ATTEMPTS,
+  codeqlSetupFrom,
 } from './collect.mjs';
 
 const SOURCE = readFileSync(new URL('./collect.mjs', import.meta.url), 'utf8');
@@ -108,11 +109,11 @@ test('an Administration-gated posture field degrades rather than aborting', () =
     'rulesets must not read through ghJson — it throws on 403 and kills the run',
   );
 
-  for (const call of ['private-vulnerability-reporting', 'default-setup', 'rulesets']) {
+  for (const call of ['private-vulnerability-reporting', 'analyses', 'rulesets']) {
     const idx = floor.indexOf(call);
     assert.ok(idx !== -1, `${call} should still be collected`);
     assert.match(
-      floor.slice(idx, idx + 260),
+      floor.slice(idx, idx + 800),
       /\.ok\b/u,
       `${call} must branch on response.ok so a denied read is unknown, not fatal`,
     );
@@ -623,15 +624,28 @@ function snap(overrides = {}) {
 function healthyRepo(overrides = {}) {
   return {
     name: 'example',
+    visibility: 'public',
+    status: 'active',
+    sharedCi: false,
     codexSyncEnabled: null,
+    delta: '',
+    htmlUrl: 'https://github.com/qwts/example',
     security: { dependabotOpen: 0, codeScanningOpen: 1, secretScanningOpen: 0 },
     securityFloor: {
       secretScanning: true,
       pushProtection: true,
       dependabotAlerts: true,
       privateVulnerabilityReporting: true,
-      codeqlConfigured: false,
+      codeqlSetup: 'none',
+      codeqlLastAnalysisAt: null,
       defaultBranchRuleset: true,
+    },
+    ci: {
+      workflowName: null,
+      conclusion: null,
+      status: null,
+      updatedAt: null,
+      htmlUrl: null,
     },
     ...overrides,
   };
@@ -691,9 +705,9 @@ test('a malformed unreadable count from an untrusted snapshot is not degradation
   assert.deepEqual(degradedReasons(snap({ unreadable: 0, repos: [healthyRepo()] })), []);
 });
 
-test('an unreadable floor boolean counts the same as an unreadable count', () => {
+test('an unreadable floor field counts the same as an unreadable count', () => {
   const reasons = degradedReasons(
-    snap({ repos: [healthyRepo({ securityFloor: { ...healthyRepo().securityFloor, codeqlConfigured: null } })] }),
+    snap({ repos: [healthyRepo({ securityFloor: { ...healthyRepo().securityFloor, codeqlSetup: null } })] }),
   );
   assert.deepEqual(reasons, ['1 posture fields unreadable']);
 });
@@ -723,16 +737,16 @@ test('a malformed count from an untrusted snapshot is unreadable, not zero', () 
 // already explained on the page by the floor flag itself.
 test('a null count for a feature the owner disabled is a choice, not a failed read', () => {
   const base = healthyRepo();
-  for (const [count, flag] of [
-    ['dependabotOpen', 'dependabotAlerts'],
-    ['codeScanningOpen', 'codeqlConfigured'],
-    ['secretScanningOpen', 'secretScanning'],
+  for (const [count, flag, isKnownFalse] of [
+    ['dependabotOpen', 'dependabotAlerts', false],
+    ['codeScanningOpen', 'codeqlSetup', 'none'],
+    ['secretScanningOpen', 'secretScanning', false],
   ]) {
     const repo = healthyRepo({
       security: { ...base.security, [count]: null },
-      securityFloor: { ...base.securityFloor, [flag]: false },
+      securityFloor: { ...base.securityFloor, [flag]: isKnownFalse },
     });
-    assert.deepEqual(degradedReasons(snap({ repos: [repo] })), [], `${flag}: false explains ${count}: null`);
+    assert.deepEqual(degradedReasons(snap({ repos: [repo] })), [], `${flag}: ${isKnownFalse} explains ${count}: null`);
   }
 });
 
@@ -740,7 +754,7 @@ test('a null count with the feature enabled is a read the collector lost', () =>
   const base = healthyRepo();
   const repo = healthyRepo({
     security: { ...base.security, codeScanningOpen: null },
-    securityFloor: { ...base.securityFloor, codeqlConfigured: true },
+    securityFloor: { ...base.securityFloor, codeqlSetup: 'advanced' },
   });
   assert.deepEqual(degradedReasons(snap({ repos: [repo] })), ['1 posture fields unreadable']);
 });
@@ -751,7 +765,7 @@ test('an unknown flag does not excuse its count', () => {
   const base = healthyRepo();
   const repo = healthyRepo({
     security: { ...base.security, codeScanningOpen: null },
-    securityFloor: { ...base.securityFloor, codeqlConfigured: null },
+    securityFloor: { ...base.securityFloor, codeqlSetup: null },
   });
   assert.deepEqual(degradedReasons(snap({ repos: [repo] })), ['2 posture fields unreadable']);
 });
@@ -763,13 +777,13 @@ test('a disabled feature excuses only its own null, nothing else', () => {
   const base = healthyRepo();
   const crossed = healthyRepo({
     security: { ...base.security, dependabotOpen: null },
-    securityFloor: { ...base.securityFloor, codeqlConfigured: false, dependabotAlerts: true },
+    securityFloor: { ...base.securityFloor, codeqlSetup: 'none', dependabotAlerts: true },
   });
   assert.deepEqual(degradedReasons(snap({ repos: [crossed] })), ['1 posture fields unreadable']);
 
   const malformed = healthyRepo({
     security: { ...base.security, codeScanningOpen: 'three' },
-    securityFloor: { ...base.securityFloor, codeqlConfigured: false },
+    securityFloor: { ...base.securityFloor, codeqlSetup: 'none' },
   });
   assert.deepEqual(degradedReasons(snap({ repos: [malformed] })), ['1 posture fields unreadable']);
 });
@@ -825,6 +839,56 @@ test('a clean run says so explicitly rather than saying nothing', () => {
   } finally {
     rmSync(out, { force: true });
   }
+});
+
+// --- codeqlSetupFrom ---------------------------------------------------------
+
+test('codeqlSetupFrom maps analyses to setup type and freshness', () => {
+  const empty = [];
+  assert.deepEqual(codeqlSetupFrom(empty), { codeqlSetup: 'none', codeqlLastAnalysisAt: null });
+
+  const defaultOnly = [
+    { analysis_key: 'dynamic/github-code-scanning/codeql:analyze', created_at: '2026-07-26T17:30:00.000Z' },
+  ];
+  assert.deepEqual(codeqlSetupFrom(defaultOnly), {
+    codeqlSetup: 'default',
+    codeqlLastAnalysisAt: '2026-07-26T17:30:00.000Z',
+  });
+
+  const advancedOnly = [
+    { analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
+  ];
+  assert.deepEqual(codeqlSetupFrom(advancedOnly), {
+    codeqlSetup: 'advanced',
+    codeqlLastAnalysisAt: '2026-07-26T16:45:00.000Z',
+  });
+
+  const mixed = [
+    { analysis_key: 'dynamic/github-code-scanning/codeql:analyze', created_at: '2026-07-26T17:30:00.000Z' },
+    { analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
+  ];
+  assert.deepEqual(codeqlSetupFrom(mixed), {
+    codeqlSetup: 'advanced',
+    codeqlLastAnalysisAt: '2026-07-26T17:30:00.000Z',
+  }, 'advanced wins as the superset');
+
+  const malformedEntry = [{ analysis_key: 'dynamic/github-code-scanning/codeql:analyze' }];
+  assert.deepEqual(codeqlSetupFrom(malformedEntry), {
+    codeqlSetup: 'default',
+    codeqlLastAnalysisAt: null,
+  }, 'missing created_at leaves timestamp null');
+
+  const missingKey = [{ created_at: '2026-07-26T17:30:00.000Z' }];
+  assert.deepEqual(codeqlSetupFrom(missingKey), {
+    codeqlSetup: 'none',
+    codeqlLastAnalysisAt: '2026-07-26T17:30:00.000Z',
+  }, 'missing analysis_key reads as none');
+
+  const nullInput = null;
+  assert.deepEqual(codeqlSetupFrom(nullInput), { codeqlSetup: null, codeqlLastAnalysisAt: null });
+
+  const nonArray = 'not an array';
+  assert.deepEqual(codeqlSetupFrom(nonArray), { codeqlSetup: null, codeqlLastAnalysisAt: null });
 });
 
 test('a reason cannot forge a second output line', () => {
