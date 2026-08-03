@@ -915,6 +915,19 @@ test('a non-CodeQL SARIF producer never reads as a CodeQL setup', () => {
     codeqlSetup: 'advanced',
     codeqlLastAnalysisAt: '2026-07-26T16:45:00.000Z',
   }, 'the CodeQL entry is classified; the Semgrep one is ignored');
+
+  // The Codex P2 case: a well-formed non-CodeQL row beside a CodeQL row with a
+  // shapeless key. Usable keys are tracked for CodeQL entries specifically, so
+  // the Semgrep row cannot launder corrupt CodeQL data into the load-bearing
+  // 'none' that excuses a failed codeScanningOpen read.
+  const semgrepPlusShapelessCodeql = [
+    { tool: { name: 'Semgrep' }, analysis_key: '.github/workflows/semgrep.yml:semgrep', created_at: '2026-07-26T17:30:00.000Z' },
+    { tool: { name: 'CodeQL' }, created_at: '2026-07-26T17:30:00.000Z' },
+  ];
+  assert.deepEqual(codeqlSetupFrom(semgrepPlusShapelessCodeql), {
+    codeqlSetup: null,
+    codeqlLastAnalysisAt: null,
+  }, 'a well-formed other tool cannot vouch for a shapeless CodeQL entry');
 });
 
 test('a reason cannot forge a second output line', () => {
