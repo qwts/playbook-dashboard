@@ -109,11 +109,15 @@ test('an Administration-gated posture field degrades rather than aborting', () =
     'rulesets must not read through ghJson — it throws on 403 and kills the run',
   );
 
-  for (const call of ['private-vulnerability-reporting', 'analyses', 'rulesets']) {
+  // The endpoint literals, not bare words: 'analyses' alone matches a comment
+  // above the call, and a window wide enough to reach `.ok` from there would
+  // span neighbouring reads — an `.ok` belonging to `rulesets` would satisfy
+  // the assertion and the test would no longer prove what its name claims.
+  for (const call of ['private-vulnerability-reporting', 'code-scanning/analyses', 'rulesets']) {
     const idx = floor.indexOf(call);
     assert.ok(idx !== -1, `${call} should still be collected`);
     assert.match(
-      floor.slice(idx, idx + 800),
+      floor.slice(idx, idx + 260),
       /\.ok\b/u,
       `${call} must branch on response.ok so a denied read is unknown, not fatal`,
     );
@@ -624,12 +628,7 @@ function snap(overrides = {}) {
 function healthyRepo(overrides = {}) {
   return {
     name: 'example',
-    visibility: 'public',
-    status: 'active',
-    sharedCi: false,
     codexSyncEnabled: null,
-    delta: '',
-    htmlUrl: 'https://github.com/qwts/example',
     security: { dependabotOpen: 0, codeScanningOpen: 1, secretScanningOpen: 0 },
     securityFloor: {
       secretScanning: true,
@@ -639,13 +638,6 @@ function healthyRepo(overrides = {}) {
       codeqlSetup: 'none',
       codeqlLastAnalysisAt: null,
       defaultBranchRuleset: true,
-    },
-    ci: {
-      workflowName: null,
-      conclusion: null,
-      status: null,
-      updatedAt: null,
-      htmlUrl: null,
     },
     ...overrides,
   };
@@ -710,6 +702,20 @@ test('an unreadable floor field counts the same as an unreadable count', () => {
     snap({ repos: [healthyRepo({ securityFloor: { ...healthyRepo().securityFloor, codeqlSetup: null } })] }),
   );
   assert.deepEqual(reasons, ['1 posture fields unreadable']);
+});
+
+// The old boolean catch-all (`typeof !== 'boolean'`) counted *anything*
+// unexpected. The enum branch must do the same for its closed set: a stale
+// snapshot still carrying `codeqlConfigured`-era `true`, or a corrupted
+// `'configured'`, is corruption the gate exists to catch — not a value to
+// pass over silently.
+test('a malformed codeqlSetup is unreadable, not silently ignored', () => {
+  for (const bad of [true, 'configured', 'CodeQL exists', 0, {}]) {
+    const reasons = degradedReasons(
+      snap({ repos: [healthyRepo({ securityFloor: { ...healthyRepo().securityFloor, codeqlSetup: bad } })] }),
+    );
+    assert.deepEqual(reasons, ['1 posture fields unreadable'], `${JSON.stringify(bad)} is corruption`);
+  }
 });
 
 // The distinction the gate lives or dies by. `codexSyncEnabled` is null on
@@ -844,11 +850,12 @@ test('a clean run says so explicitly rather than saying nothing', () => {
 // --- codeqlSetupFrom ---------------------------------------------------------
 
 test('codeqlSetupFrom maps analyses to setup type and freshness', () => {
+  const codeql = { tool: { name: 'CodeQL' } };
   const empty = [];
   assert.deepEqual(codeqlSetupFrom(empty), { codeqlSetup: 'none', codeqlLastAnalysisAt: null });
 
   const defaultOnly = [
-    { analysis_key: 'dynamic/github-code-scanning/codeql:analyze', created_at: '2026-07-26T17:30:00.000Z' },
+    { ...codeql, analysis_key: 'dynamic/github-code-scanning/codeql:analyze', created_at: '2026-07-26T17:30:00.000Z' },
   ];
   assert.deepEqual(codeqlSetupFrom(defaultOnly), {
     codeqlSetup: 'default',
@@ -856,7 +863,7 @@ test('codeqlSetupFrom maps analyses to setup type and freshness', () => {
   });
 
   const advancedOnly = [
-    { analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
+    { ...codeql, analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
   ];
   assert.deepEqual(codeqlSetupFrom(advancedOnly), {
     codeqlSetup: 'advanced',
@@ -864,31 +871,50 @@ test('codeqlSetupFrom maps analyses to setup type and freshness', () => {
   });
 
   const mixed = [
-    { analysis_key: 'dynamic/github-code-scanning/codeql:analyze', created_at: '2026-07-26T17:30:00.000Z' },
-    { analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
+    { ...codeql, analysis_key: 'dynamic/github-code-scanning/codeql:analyze', created_at: '2026-07-26T17:30:00.000Z' },
+    { ...codeql, analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
   ];
   assert.deepEqual(codeqlSetupFrom(mixed), {
     codeqlSetup: 'advanced',
     codeqlLastAnalysisAt: '2026-07-26T17:30:00.000Z',
   }, 'advanced wins as the superset');
 
-  const malformedEntry = [{ analysis_key: 'dynamic/github-code-scanning/codeql:analyze' }];
+  const malformedEntry = [{ ...codeql, analysis_key: 'dynamic/github-code-scanning/codeql:analyze' }];
   assert.deepEqual(codeqlSetupFrom(malformedEntry), {
     codeqlSetup: 'default',
     codeqlLastAnalysisAt: null,
   }, 'missing created_at leaves timestamp null');
 
-  const missingKey = [{ created_at: '2026-07-26T17:30:00.000Z' }];
+  const missingKey = [{ ...codeql, created_at: '2026-07-26T17:30:00.000Z' }];
   assert.deepEqual(codeqlSetupFrom(missingKey), {
-    codeqlSetup: 'none',
-    codeqlLastAnalysisAt: '2026-07-26T17:30:00.000Z',
-  }, 'missing analysis_key reads as none');
+    codeqlSetup: null,
+    codeqlLastAnalysisAt: null,
+  }, 'entries present but shapeless is corruption, not absence — never the load-bearing none');
 
   const nullInput = null;
   assert.deepEqual(codeqlSetupFrom(nullInput), { codeqlSetup: null, codeqlLastAnalysisAt: null });
 
   const nonArray = 'not an array';
   assert.deepEqual(codeqlSetupFrom(nonArray), { codeqlSetup: null, codeqlLastAnalysisAt: null });
+});
+
+// A Semgrep, Trivy, or any other SARIF upload has a workflow-path analysis_key
+// and would read as 'advanced' without the tool filter — a false green on a
+// security floor bit, the one direction this dashboard is built not to fail in.
+test('a non-CodeQL SARIF producer never reads as a CodeQL setup', () => {
+  const semgrepOnly = [
+    { tool: { name: 'Semgrep' }, analysis_key: '.github/workflows/semgrep.yml:semgrep', created_at: '2026-07-26T17:30:00.000Z' },
+  ];
+  assert.deepEqual(codeqlSetupFrom(semgrepOnly), { codeqlSetup: 'none', codeqlLastAnalysisAt: null });
+
+  const semgrepAndCodeql = [
+    { tool: { name: 'Semgrep' }, analysis_key: '.github/workflows/semgrep.yml:semgrep', created_at: '2026-07-26T17:30:00.000Z' },
+    { tool: { name: 'CodeQL' }, analysis_key: '.github/workflows/ci.yml:analyze', created_at: '2026-07-26T16:45:00.000Z' },
+  ];
+  assert.deepEqual(codeqlSetupFrom(semgrepAndCodeql), {
+    codeqlSetup: 'advanced',
+    codeqlLastAnalysisAt: '2026-07-26T16:45:00.000Z',
+  }, 'the CodeQL entry is classified; the Semgrep one is ignored');
 });
 
 test('a reason cannot forge a second output line', () => {
