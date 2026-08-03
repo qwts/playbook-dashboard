@@ -1,4 +1,4 @@
-import { signClaims, verifyClaims } from './crypto.ts';
+import { randomBase64Url, signClaims, verifyClaims } from './crypto.ts';
 import type { Env, Provider } from './env.ts';
 import { isProvider, sessionTtlSeconds } from './env.ts';
 
@@ -13,6 +13,16 @@ export type SessionClaims = {
   subject: string;
   login: string | null;
   email: string | null;
+  /**
+   * Names this sign-in, so a stored GitHub actor token belongs to one session
+   * rather than to an identity. Signing out deletes that row; a second sign-in
+   * gets its own id and cannot extend the life of the first one's credential.
+   *
+   * Nothing about privilege is carried here. Admin status is re-derived from
+   * configuration on every request, so removing someone from the allowlist
+   * takes effect on their next request rather than at their next sign-in.
+   */
+  sid: string;
   iat: number;
   exp: number;
 };
@@ -88,6 +98,8 @@ function isSessionClaims(value: unknown): value is SessionClaims {
     isProvider(value.provider) &&
     typeof value.subject === 'string' &&
     value.subject.length > 0 &&
+    typeof value.sid === 'string' &&
+    value.sid.length > 0 &&
     isNullableString(value.login) &&
     isNullableString(value.email) &&
     typeof value.iat === 'number' &&
@@ -109,16 +121,18 @@ function isOAuthTx(value: unknown): value is OAuthTx {
 
 export async function issueSession(
   env: Env,
-  claims: Omit<SessionClaims, 'iat' | 'exp'>,
-): Promise<{ token: string; maxAge: number }> {
+  claims: Omit<SessionClaims, 'iat' | 'exp' | 'sid'>,
+): Promise<{ token: string; maxAge: number; sid: string }> {
   const now = Math.floor(Date.now() / 1000);
   const maxAge = sessionTtlSeconds(env);
+  const sid = randomBase64Url(32);
   const token = await signClaims(env.SESSION_SECRET, 'session', {
     ...claims,
+    sid,
     iat: now,
     exp: now + maxAge,
   } satisfies SessionClaims);
-  return { token, maxAge };
+  return { token, maxAge, sid };
 }
 
 export async function readSession(env: Env, request: Request): Promise<SessionClaims | null> {

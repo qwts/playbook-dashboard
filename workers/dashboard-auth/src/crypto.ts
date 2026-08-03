@@ -4,6 +4,11 @@
  * Cookies are signed (HMAC-SHA256), not encrypted: claims are readable by the
  * client but cannot be forged without SESSION_SECRET. Nothing privileged is
  * ever placed in a cookie payload.
+ *
+ * `seal`/`open` are the exception to that sentence, and they exist for the one
+ * thing that is never a cookie: the GitHub actor token, which sits in D1 under
+ * AES-GCM. A database read — a mis-scoped API token, a backup, a query
+ * console — should yield ciphertext rather than a live credential.
  */
 
 /**
@@ -96,6 +101,55 @@ export async function verifyClaims<T>(
 
   try {
     return JSON.parse(decoder.decode(base64UrlToBytes(payload))) as T;
+  } catch {
+    return null;
+  }
+}
+
+const GCM_IV_BYTES = 12;
+
+async function aesKey(secret: string, usages: Array<'encrypt' | 'decrypt'>) {
+  // The secret is key *material*, not a key: hashing it to 32 bytes means the
+  // configured value can be any length without the import silently failing.
+  const material = await crypto.subtle.digest('SHA-256', encoder.encode(secret));
+  return crypto.subtle.importKey('raw', material, { name: 'AES-GCM' }, false, usages);
+}
+
+/** Returns `base64url(iv || ciphertext)`. A fresh IV per call, never reused. */
+export async function seal(secret: string, value: unknown): Promise<string> {
+  const key = await aesKey(secret, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(GCM_IV_BYTES));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv as unknown as ArrayBuffer },
+      key,
+      encoder.encode(JSON.stringify(value)),
+    ),
+  );
+
+  const packed = new Uint8Array(iv.length + ciphertext.length);
+  packed.set(iv);
+  packed.set(ciphertext, iv.length);
+  return bytesToBase64Url(packed);
+}
+
+/** Null for anything that does not decrypt and parse — tampering included. */
+export async function open<T>(secret: string, sealed: string): Promise<T | null> {
+  let packed: Uint8Array;
+  try {
+    packed = base64UrlToBytes(sealed);
+  } catch {
+    return null;
+  }
+  if (packed.length <= GCM_IV_BYTES) return null;
+
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: packed.slice(0, GCM_IV_BYTES) as unknown as ArrayBuffer },
+      await aesKey(secret, ['decrypt']),
+      packed.slice(GCM_IV_BYTES) as unknown as ArrayBuffer,
+    );
+    return JSON.parse(decoder.decode(new Uint8Array(plaintext))) as T;
   } catch {
     return null;
   }

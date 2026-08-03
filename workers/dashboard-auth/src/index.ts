@@ -8,12 +8,18 @@
  * configured provider gets one — there are no roles or permissions.
  */
 
+import { routeAdmin } from './admin.ts';
+import { forgetActorToken, storeActorToken } from './actor.ts';
 import { safeEqual, sha256Base64Url } from './crypto.ts';
 import type { Env, Provider } from './env.ts';
 import { isProvider } from './env.ts';
+import { json, JSON_HEADERS } from './http.ts';
+import { isAdminIdentity } from './privileges.ts';
 import { buildAppleAuthorizeUrl, exchangeAppleCode } from './providers/apple.ts';
 import { buildGitHubAuthorizeUrl, exchangeGitHubCode } from './providers/github.ts';
+import type { UserToken } from './providers/github.ts';
 import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from './providers/google.ts';
+import { getActorToken, recordSignIn } from './store.ts';
 import {
   SESSION_COOKIE,
   TX_COOKIE,
@@ -35,11 +41,6 @@ type ExchangeBody = {
   code?: unknown;
   state?: unknown;
   code_verifier?: unknown;
-};
-
-const JSON_HEADERS = {
-  'Content-Type': 'application/json; charset=utf-8',
-  'Cache-Control': 'no-store',
 };
 
 /**
@@ -80,14 +81,6 @@ export function applySecurityHeaders(response: Response): Response {
   // get to make for qwts.org.
   headers.set('Strict-Transport-Security', 'max-age=31536000');
   return response;
-}
-
-function json(body: unknown, init: ResponseInit = {}): Response {
-  const headers = new Headers(init.headers);
-  for (const [name, value] of Object.entries(JSON_HEADERS)) {
-    if (!headers.has(name)) headers.set(name, value);
-  }
-  return new Response(JSON.stringify(body), { ...init, headers });
 }
 
 function isSecure(url: URL): boolean {
@@ -209,6 +202,7 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
   const redirectUri = redirectUriFor(url);
 
   let identity: Identity;
+  let actorToken: UserToken | null = null;
   try {
     if (tx.provider === 'apple') {
       const result = await exchangeAppleCode(env, { code, redirectUri, codeVerifier });
@@ -219,6 +213,7 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
     } else {
       const result = await exchangeGitHubCode(env, { code, redirectUri, codeVerifier });
       identity = { subject: result.subject, login: result.login, email: result.email };
+      actorToken = result.token;
     }
   } catch (error) {
     // Provider errors are constructed strings — status plus an allowlisted
@@ -238,6 +233,34 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
     login: identity.login,
     email: identity.email,
   });
+
+  const record = { provider: tx.provider, ...identity };
+  const now = Math.floor(Date.now() / 1000);
+
+  // Best effort, deliberately. Sign-in tracking is a convenience, and a
+  // database that cannot take a write must not be able to deny every account a
+  // read-only dashboard.
+  if (env.DB) {
+    await recordSignIn(env.DB, record, now).catch((error: unknown) => {
+      console.error(
+        'sign-in record failed:',
+        error instanceof Error ? error.message : 'unknown error',
+      );
+    });
+  }
+
+  // The one place an actor token is kept. For everyone else it was used once,
+  // above, to resolve a login — and goes out of scope here unstored.
+  if (actorToken && isAdminIdentity(env, tx.provider, identity.subject)) {
+    await storeActorToken(env, session.sid, record, actorToken, now).catch((error: unknown) => {
+      // An admin whose token did not persist is an admin who can read. The
+      // privileged panel reports itself unavailable rather than half working.
+      console.error(
+        'actor token store failed:',
+        error instanceof Error ? error.message : 'unknown error',
+      );
+    });
+  }
 
   const headers = new Headers(JSON_HEADERS);
   headers.append('Set-Cookie', clearTx);
@@ -263,6 +286,19 @@ async function handleMe(env: Env, request: Request): Promise<Response> {
     return json({ authenticated: false }, { status: 401, headers: { Vary: 'Cookie' } });
   }
 
+  // Re-derived per request rather than carried in the cookie: removing someone
+  // from the allowlist takes effect now, not at their next sign-in.
+  const admin = isAdminIdentity(env, session.provider, session.subject);
+
+  // Admin says the panel may be shown. Privileged says an action would
+  // actually reach GitHub — the two differ for an admin signed in with Apple
+  // or Google, and for one whose token has lapsed. The SPA needs to tell those
+  // apart to say something true.
+  const privileged =
+    admin && session.provider === 'github' && env.DB
+      ? (await getActorToken(env.DB, session.sid).catch(() => null)) !== null
+      : false;
+
   return json(
     {
       authenticated: true,
@@ -270,12 +306,18 @@ async function handleMe(env: Env, request: Request): Promise<Response> {
       login: session.login,
       email: session.email,
       expiresAt: session.exp,
+      admin,
+      privileged,
     },
     { headers: { Vary: 'Cookie' } },
   );
 }
 
-function handleLogout(request: Request, url: URL): Response {
+async function handleLogout(env: Env, request: Request, url: URL): Promise<Response> {
+  // Signing out ends the credential, not just the cookie.
+  const session = await readSession(env, request);
+  if (session) await forgetActorToken(env, session.sid);
+
   const cookie = clearCookie(SESSION_COOKIE, isSecure(url));
 
   if ((request.headers.get('Accept') ?? '').includes('text/html')) {
@@ -322,7 +364,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     return handleMe(env, request);
   }
   if (pathname === '/auth/logout') {
-    return handleLogout(request, url);
+    return handleLogout(env, request, url);
   }
   if (pathname.startsWith('/auth/')) {
     // /auth/callback and anything else under /auth render the SPA shell, which
@@ -334,6 +376,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     shell.headers.set('Cache-Control', 'no-store');
     return shell;
   }
+
+  // Before the read-only method check below, because /admin/review is a POST —
+  // and inside the same wrapped exit, so privileged responses carry the same
+  // hardening headers as everything else.
+  const privileged = await routeAdmin(env, request, url);
+  if (privileged) return privileged;
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return json({ error: 'method_not_allowed' }, { status: 405 });

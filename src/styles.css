@@ -454,3 +454,108 @@ tr:last-child td {
     transform: none;
   }
 }
+
+/* The review panel. Deliberately quieter than the tables it sits above: the
+   controls are the same weight as sign-out, and the only emphasised button on
+   the page is the one that submits a review under your own name. */
+.review-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding: 0 1.25rem 1rem;
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1 1 16rem;
+}
+
+.review-field span {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.review-field select,
+.review-field textarea {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.review-field textarea {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  resize: vertical;
+}
+
+.review-field select:focus-visible,
+.review-field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.review-notice {
+  margin: 0 1.25rem 1rem;
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--line);
+  background: var(--bg-1);
+  font-size: 0.88rem;
+}
+
+.review-notice[data-tone="ok"] {
+  border-left-color: var(--ok);
+}
+
+.review-notice[data-tone="warn"] {
+  border-left-color: var(--warn);
+}
+
+.review-notice[data-tone="danger"] {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
+/* The armed action. It states repo, number, verb, and commit before anything
+   is sent — an approval that cannot be read back is not a review. */
+.review-confirm {
+  margin: 0 1.25rem 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.review-confirm p {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.review-confirm code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.review-actions .auth-button {
+  width: auto;
+  margin-top: 0;
+}
+
+.review-actions .signout:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

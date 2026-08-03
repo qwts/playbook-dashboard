@@ -31,13 +31,22 @@ maps); `npm run collect` rebuilds `public/data/snapshot.json` from GitHub APIs;
 
 **Auth.** `workers/dashboard-auth` is a Cloudflare Worker in front of the Pages
 origin: Apple, Google, and GitHub sign-in, HMAC-signed session cookie. Sign-up is
-open — no allowlist, no RBAC, every session is read-only and sees the same
-snapshot. It is the only place IdP secrets may live and the only enforcement
-point — it returns `401` for `/data/*` without a session. `public/sw.js` handles
-the OAuth return trip and credentialed snapshot fetches, and is assumed
-bypassable. The static shell is intentionally public so the SPA can render its
-own sign-in screen. `npm run dev` defaults to `VITE_AUTH_DISABLED=1`; never make
-that the production default.
+open and every session reads the same snapshot. It is the only place IdP secrets
+may live and the only enforcement point — it returns `401` for `/data/*` without
+a session. `public/sw.js` handles the OAuth return trip and credentialed
+snapshot fetches, and is assumed bypassable. The static shell is intentionally
+public so the SPA can render its own sign-in screen. `npm run dev` defaults to
+`VITE_AUTH_DISABLED=1`; never make that the production default.
+
+**Privileged actions are the signed-in person's, not the dashboard's.** An
+identity on the `ADMIN_SUBJECTS` allowlist can submit pull request reviews from
+`/admin/*`, performed with their own GitHub App user token — so GitHub decides
+whether the action is permitted and the review is attributed to the human. The
+Worker holds no credential that can write to the fleet by itself, and adding one
+would undo the property the design exists for. The allowlist decides who *sees*
+the panel; GitHub decides what succeeds. Never merge the two into one check, and
+never let a privileged response reach `snapshot.json` — it carries PR titles,
+which the redaction contract forbids publishing. See DESIGN.md for the decision.
 
 **Local TLS.** Certs live under `~/.quorum/certs` (CN `local.dev.zts1.com`).
 The encrypted key passphrase is loaded only through the environment variable

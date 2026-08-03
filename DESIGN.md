@@ -18,21 +18,25 @@ redaction in the snapshot, and an authenticated session in front of it.
 
 ## Access control
 
-Apple, Google, and GitHub are accepted identity providers. There is no allowlist
-and no RBAC — any account that completes a sign-in gets a read-only session, and
-every session sees the same snapshot.
+Apple, Google, and GitHub are accepted identity providers. Any account that
+completes a sign-in gets a session, and every session sees the same snapshot.
+
+Reading and acting are separate questions. An identity named in `ADMIN_SUBJECTS`
+additionally sees the review panel, and what it can *do* there is decided by
+GitHub rather than by this system — see the privileged-actions decision below.
 
 | Layer | Responsibility |
 | --- | --- |
-| `workers/dashboard-auth` | Holds all IdP secrets, mints the session cookie, and returns `401` for `/data/*` without one. Sole enforcement point. |
-| `public/sw.js` | Completes the OAuth return trip, keeps snapshot fetches credentialed, and signals the SPA when a session lapses. UX only, assumed bypassable. |
+| `workers/dashboard-auth` | Holds all IdP secrets, mints the session cookie, returns `401` for `/data/*` without one, and is the only place a privileged action is authorized or recorded. Sole enforcement point. |
+| `public/sw.js` | Completes the OAuth return trip, keeps snapshot fetches credentialed, and signals the SPA when a session lapses. UX only, assumed bypassable. Never touches `/admin/*`. |
 | `src/App.tsx` | Renders the sign-in composition or the dashboard based on `/auth/me`. |
+| `src/Review.tsx` | The privileged panel. Renders for an allowlisted session only, and reads live GitHub state that never enters the artifact. |
 
 The static shell stays public so the SPA can render its own sign-in screen. The
 redacted snapshot under `/data/` is what requires a session.
 
 Flow is authorization code with PKCE. Google enforces the binding itself; Apple
-and GitHub OAuth Apps do not, so the Worker verifies `code_challenge` against
+and GitHub do not, so the Worker verifies `code_challenge` against
 `code_verifier` for every provider. Redaction rules below still apply in full —
 and carry more weight now that sign-up is open: authentication narrows the
 audience, it does not widen what may be published.
@@ -409,6 +413,113 @@ cannot read — 207 KB across 14 files:
 | `IBMPlexSans-Regular-Pi.woff2` | 7,500 | `1487059829a180f975627e473acc81ff22c2c0faf1da09b314c27eeb41b7f2e4` |
 | `IBMPlexSans-SemiBold-Latin1.woff2` | 22,260 | `fff0ab3a88b0b4aa0b693e4f0201359a15183b08e3fa5696d1918d8f0ade8ad5` |
 | `IBMPlexSans-SemiBold-Pi.woff2` | 7,824 | `768421433d850d3a30118dddf05972625d99ee49bc32c5a8fd26bbe020c4d0f9` |
+
+## Decision: a privileged action is the person's, not the dashboard's
+
+**Decision.** Signing in with GitHub uses a **GitHub App user authorization**,
+not an OAuth App. For an identity on the `ADMIN_SUBJECTS` allowlist the
+resulting user-to-server token is kept — sealed with AES-GCM, keyed by session
+id, in D1 — and every privileged call is made with it. For everyone else it is
+used once to resolve a login and discarded, exactly as before.
+
+So the dashboard does not decide whether a pull request may be approved.
+GitHub does, against the person's own access, and the review it records says
+their name.
+
+**Why.** The obvious build is a bot: give the Worker an installation token with
+`pull_requests: write`, keep a list of who may press the button, and act. It
+needs no token store, works from any provider, and is wrong in two ways that
+compound.
+
+The first is blast radius. That token is a standing, fleet-wide write
+capability sitting at the edge of a public static site, and the only thing
+between it and the fleet is a list this repository maintains. Every bug in the
+gate, every stolen session, every future route that forgets a check inherits
+the full permissions of the App. Nothing about it is bounded by who is asking.
+
+The second is worse for a governance tool specifically: it launders authorship.
+This organization's pull requests are frequently opened by an agent bot. If a
+bot then approves them, the two-eyes property is gone on paper as well as in
+fact — the audit trail on GitHub reads `dashboard-bot approved`, and the
+control that was supposed to be a human looking at a diff has become a service
+account with a checkbox. A dashboard that makes that easy is worse than one
+that cannot act at all.
+
+A user token inverts both. It cannot exceed what the person could already do,
+so the permission question is answered by the system that owns the answer
+rather than duplicated into a matrix here that will drift. It expires in hours
+and refreshes on rotation, so a leaked store is a short-lived problem rather
+than a permanent one. Losing org access revokes the dashboard automatically,
+with no list to remember to edit. And the review reads as the human, because it
+was.
+
+**The allowlist survives, demoted.** It decides who *sees* privileged UI, not
+what succeeds. Two independent gates, and the outer one is not ours. It is
+keyed on provider subject rather than login or email: a GitHub login can be
+renamed and then claimed by someone else, an email can be reassigned, and
+Apple's relay address is per-app. It is re-read from configuration on every
+request rather than baked into the session cookie, so removing someone takes
+effect on their next request rather than at their next sign-in — the direction
+that matters when the reason for removing them is urgent.
+
+**The set of actions is closed, and there is no proxy.** Three routes: list the
+App's installation repositories, list one repository's open pull requests,
+submit one review. No route forwards an arbitrary method and path to GitHub,
+because a generic proxy has whatever permissions the token has, and this token
+can write. Adding a verb is a diff, reviewed, the same property the snapshot
+validator's closed key set gives the published artifact.
+
+**An approval names the commit it approves.** The request carries the head sha
+that was on screen; the Worker compares it and refuses `409` if it moved, then
+passes `commit_id` so GitHub refuses independently if it moves between the
+check and the call. A push between render and click makes it a different pull
+request wearing the same number, and approving that is precisely the failure
+a review control exists to prevent. This is stricter than GitHub's own UI.
+
+**The record precedes the act.** The audit row is written before the request
+leaves, and a write that fails refuses the action — 503, nothing sent. The
+alternative, recording outcomes afterwards, cannot represent the state that
+matters most: a call that left here and never came back. That state has a name
+in the schema (`attempted`) and is the one worth investigating. A row left at
+`attempted` after a successful call is a false alarm; a missing row after a
+successful call is a false all-clear, and this repository errs in the first
+direction. The client's idempotency key is the row's primary key, so a double
+submit collides with the row it already wrote instead of approving twice.
+
+**Reading and acting have different clocks.** The session lasts eight hours
+because re-authenticating to read a dashboard hourly is theatre. Acting
+requires authentication within the last hour, because a cookie lifted from a
+walked-away laptop should usually be too old to approve anything, and for an
+App the person has already authorized, re-authenticating is a silent redirect.
+
+**Identity tracking is best effort; the audit log is not.** A database that
+cannot take a write must never be able to deny every account a read-only
+dashboard, so a failed sign-in record is logged and ignored. The same failure
+on the audit path stops the action. Two stores, two postures, and the
+difference is whether anything irreversible depends on the write.
+
+**Nothing privileged is publishable.** The panel shows pull request titles and
+authors — both on the forbidden list the snapshot is validated against. That is
+the reason they are served live, per session, `private, no-store`, from a route
+the collector never touches, rather than added to the artifact. The redaction
+contract is unchanged by this work, and the privileged surface must not become
+the way around it.
+
+**Rejected alternatives.** *Bot installation token*, above — the design this
+exists instead of. *An OAuth App with `repo` scope* also acts as the person and
+needs no D1, but its token never expires and carries write access to every
+repository that person can reach, which is the opposite of an installation
+boundary. *Dashboard proposes, a workflow disposes* — dispatch an intent to a
+workflow with environment protection — has the smallest edge blast radius of
+all and is the right shape for a genuinely destructive fleet-wide action; for
+approving a pull request it means approving twice, and the indirection buys
+nothing the user token does not already give.
+
+**Consequence.** Sign-in with GitHub now requires a GitHub App, and existing
+sessions sign out once on deploy because the session claim shape gained an id.
+Until `ADMIN_SUBJECTS` is set, nobody is privileged and the panel renders for
+no one — which is the correct resting state for a deployment that has not
+decided who may act.
 
 ## Local development
 

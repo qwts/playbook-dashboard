@@ -1,0 +1,210 @@
+/**
+ * The Worker's only persistent state.
+ *
+ * Two of these three tables are conveniences and one is load-bearing. Sign-in
+ * tracking is best effort — a database hiccup must not be able to lock every
+ * account out of a read-only dashboard — and the actor token is a cache of
+ * something GitHub would re-issue anyway. The audit log is neither: a
+ * privileged action that cannot be recorded does not happen, so every function
+ * here that touches it lets its errors propagate to a caller that refuses.
+ */
+
+import type { Database } from './d1.ts';
+import type { Provider } from './env.ts';
+
+export type Identity = {
+  provider: Provider;
+  subject: string;
+  login: string | null;
+  email: string | null;
+};
+
+/**
+ * Upsert on sign-in.
+ *
+ * `COALESCE` on login and email because absence is not erasure: Apple returns
+ * an email only on the first authorization, and a later sign-in carrying null
+ * must not delete what the first one learned.
+ */
+export async function recordSignIn(db: Database, identity: Identity, now: number): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO identities
+         (provider, subject, login, email, first_seen_at, last_seen_at, sign_in_count)
+       VALUES (?, ?, ?, ?, ?, ?, 1)
+       ON CONFLICT(provider, subject) DO UPDATE SET
+         login         = COALESCE(excluded.login, identities.login),
+         email         = COALESCE(excluded.email, identities.email),
+         last_seen_at  = excluded.last_seen_at,
+         sign_in_count = identities.sign_in_count + 1`,
+    )
+    .bind(identity.provider, identity.subject, identity.login, identity.email, now, now)
+    .run();
+}
+
+export type StoredToken = {
+  secret: string;
+  accessExpiresAt: number | null;
+  refreshExpiresAt: number | null;
+};
+
+type TokenRow = {
+  secret: string;
+  access_expires_at: number | null;
+  refresh_expires_at: number | null;
+};
+
+export async function putActorToken(
+  db: Database,
+  sid: string,
+  identity: Identity,
+  token: StoredToken,
+  now: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO actor_tokens
+         (sid, provider, subject, secret, access_expires_at, refresh_expires_at,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(sid) DO UPDATE SET
+         secret             = excluded.secret,
+         access_expires_at  = excluded.access_expires_at,
+         refresh_expires_at = excluded.refresh_expires_at,
+         updated_at         = excluded.updated_at`,
+    )
+    .bind(
+      sid,
+      identity.provider,
+      identity.subject,
+      token.secret,
+      token.accessExpiresAt,
+      token.refreshExpiresAt,
+      now,
+      now,
+    )
+    .run();
+}
+
+export async function getActorToken(db: Database, sid: string): Promise<StoredToken | null> {
+  const row = await db
+    .prepare(
+      `SELECT secret, access_expires_at, refresh_expires_at
+         FROM actor_tokens WHERE sid = ?`,
+    )
+    .bind(sid)
+    .first<TokenRow>();
+
+  if (!row) return null;
+  return {
+    secret: row.secret,
+    accessExpiresAt: row.access_expires_at,
+    refreshExpiresAt: row.refresh_expires_at,
+  };
+}
+
+export async function deleteActorToken(db: Database, sid: string): Promise<void> {
+  await db.prepare('DELETE FROM actor_tokens WHERE sid = ?').bind(sid).run();
+}
+
+export type AuditAttempt = {
+  /** The client's idempotency key, which is also the primary key. */
+  id: string;
+  identity: Identity;
+  action: string;
+  repo: string;
+  target: string;
+  headSha: string;
+  verb: string;
+};
+
+export type AuditBegin =
+  | { status: 'recorded' }
+  /**
+   * This key already acted. The first attempt's outcome comes back with what
+   * it was aimed at, because a key reused against a *different* pull request
+   * is not a replay — it is a client bug that would otherwise report success
+   * for something that never happened.
+   */
+  | { status: 'replay'; outcome: string; repo: string; target: string; verb: string };
+
+/**
+ * Write-ahead: the row exists before the request leaves for GitHub.
+ *
+ * The alternative — record what happened after it happened — cannot record the
+ * case that matters most, which is a call that left here and never came back.
+ */
+export async function beginAudit(
+  db: Database,
+  attempt: AuditAttempt,
+  now: number,
+): Promise<AuditBegin> {
+  const insert = await db
+    .prepare(
+      `INSERT INTO audit_log
+         (id, started_at, provider, subject, login, action, repo, target, head_sha, verb, outcome)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'attempted')
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(
+      attempt.id,
+      now,
+      attempt.identity.provider,
+      attempt.identity.subject,
+      attempt.identity.login,
+      attempt.action,
+      attempt.repo,
+      attempt.target,
+      attempt.headSha,
+      attempt.verb,
+    )
+    .run();
+
+  if ((insert.meta.changes ?? 0) > 0) return { status: 'recorded' };
+
+  const existing = await db
+    .prepare('SELECT outcome, repo, target, verb FROM audit_log WHERE id = ?')
+    .bind(attempt.id)
+    .first<{ outcome: string; repo: string; target: string; verb: string }>();
+
+  return {
+    status: 'replay',
+    outcome: existing?.outcome ?? 'unknown',
+    repo: existing?.repo ?? '',
+    target: existing?.target ?? '',
+    verb: existing?.verb ?? '',
+  };
+}
+
+/** Only ever closes an open attempt, so a replay cannot rewrite history. */
+export async function completeAudit(
+  db: Database,
+  id: string,
+  outcome: string,
+  now: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE audit_log SET outcome = ?, completed_at = ?
+        WHERE id = ? AND outcome = 'attempted'`,
+    )
+    .bind(outcome, now, id)
+    .run();
+}
+
+/** Counts attempts, not successes — a burst of failures is still a burst. */
+export async function countRecentActions(
+  db: Database,
+  identity: Identity,
+  since: number,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS attempts FROM audit_log
+        WHERE provider = ? AND subject = ? AND started_at >= ?`,
+    )
+    .bind(identity.provider, identity.subject, since)
+    .first<{ attempts: number }>();
+
+  return row?.attempts ?? 0;
+}
