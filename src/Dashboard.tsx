@@ -73,27 +73,54 @@ function toneForCi(repo: RepoSnapshot): Tone {
 }
 
 function FloorBits({ repo }: { repo: RepoSnapshot }) {
-  const bits: Array<[string, boolean | null]> = [
+  const bits: Array<[string, boolean | null | string]> = [
     ['secrets', repo.securityFloor.secretScanning],
     ['push', repo.securityFloor.pushProtection],
     ['dependabot', repo.securityFloor.dependabotAlerts],
     ['pvr', repo.securityFloor.privateVulnerabilityReporting],
-    ['codeql', repo.securityFloor.codeqlConfigured],
+    ['codeql', repo.securityFloor.codeqlSetup],
     ['ruleset', repo.securityFloor.defaultBranchRuleset],
   ];
 
+  const codeqlLabel = (value: unknown): string => {
+    if (value === 'default' || value === 'advanced') return value;
+    if (value === 'none') return 'none';
+    return '?';
+  };
+
+  const codeqlTone = (value: unknown): Tone => {
+    if (value === 'default' || value === 'advanced') return 'ok';
+    if (value === 'none') return 'danger';
+    return 'muted';
+  };
+
+  const codeqlTitle = (value: unknown, lastAnalysisAt: string | null): string => {
+    const base = `codeql: ${codeqlLabel(value)}`;
+    if (lastAnalysisAt) {
+      const date = new Date(lastAnalysisAt).toLocaleDateString();
+      return `${base} (last: ${date})`;
+    }
+    return base;
+  };
+
   return (
     <div className="floor-grid">
-      {bits.map(([key, value]) => (
-        <span
-          key={key}
-          className="badge"
-          data-tone={value === true ? 'ok' : value === false ? 'danger' : 'muted'}
-          title={`${key}: ${boolLabel(value)}`}
-        >
-          {key}:{boolLabel(value)}
-        </span>
-      ))}
+      {bits.map(([key, value]) => {
+        const isCodeql = key === 'codeql';
+        const tone = isCodeql ? codeqlTone(value) : value === true ? 'ok' : value === false ? 'danger' : 'muted';
+        const label = isCodeql ? codeqlLabel(value) : boolLabel(value as boolean | null);
+        const title = isCodeql ? codeqlTitle(value, repo.securityFloor.codeqlLastAnalysisAt) : `${key}: ${boolLabel(value as boolean | null)}`;
+        return (
+          <span
+            key={key}
+            className="badge"
+            data-tone={tone}
+            title={title}
+          >
+            {key}:{label}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -305,7 +332,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
           <div
             className="value"
             data-tone={toneForFloorCoverage(floor)}
-            title="Published repos where every security-floor setting is enabled: secret scanning, push protection, Dependabot alerts, private vulnerability reporting, CodeQL, and a default-branch ruleset. A repo with any unreadable setting is not counted as complete."
+            title="Published repos where every security-floor setting is enabled: secret scanning, push protection, Dependabot alerts, private vulnerability reporting, CodeQL (default or advanced setup), and a default-branch ruleset. A repo with any unreadable setting is not counted as complete."
           >
             {floor.complete} / {floor.total}
             {floor.unknown > 0 ? (

@@ -19,6 +19,10 @@
  *
  * Auth: GITHUB_TOKEN or GH_TOKEN (fine-grained: Contents read on playbook,
  * Metadata + Security events / Dependabot alerts / Actions on governed repos).
+ *
+ * Rate budget: roughly 70 requests an hour against a budget of 5,000. One request
+ * per repo for the CodeQL analyses endpoint replaces the previous default-setup
+ * read; the total improves slightly.
  */
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -304,7 +308,59 @@ export async function countOpenAlerts(repo, kind) {
   return Array.isArray(rows) ? rows.length : null;
 }
 
-async function fetchSecurityFloor(repo, detail) {
+/**
+ * Derive CodeQL setup type and freshness from the analyses endpoint.
+ *
+ * The `analysis_key` field distinguishes the two setups:
+ * - `dynamic/github-code-scanning/` prefix = default setup
+ * - workflow path (e.g. `.github/workflows/ci.yml:analyze`) = advanced setup
+ *
+ * Returns `{ codeqlSetup, codeqlLastAnalysisAt }` where:
+ * - `codeqlSetup` is `'advanced' | 'default' | 'none' | null`
+ * - `codeqlLastAnalysisAt` is the ISO timestamp of the most recent analysis on the
+ *   default branch, or `null` when the list is empty or the field is absent/malformed.
+ *
+ * Tradeoff accepted knowingly: a newly added workflow that has not run yet reads as
+ * `'none'` until its first analysis lands. This is correct — a workflow that has
+ * never produced an analysis is not protecting the repo, and the window is
+ * self-closing (one CI run).
+ */
+export function codeqlSetupFrom(analyses) {
+  if (!Array.isArray(analyses)) return { codeqlSetup: null, codeqlLastAnalysisAt: null };
+  if (analyses.length === 0) return { codeqlSetup: 'none', codeqlLastAnalysisAt: null };
+
+  let hasAdvanced = false;
+  let hasDefault = false;
+  let latestAnalysisAt = null;
+
+  for (const entry of analyses) {
+    const key = entry?.analysis_key;
+    if (typeof key === 'string') {
+      if (key.startsWith('dynamic/github-code-scanning/')) {
+        hasDefault = true;
+      } else {
+        hasAdvanced = true;
+      }
+    }
+
+    const createdAt = entry?.created_at;
+    if (typeof createdAt === 'string') {
+      const ts = Date.parse(createdAt);
+      if (Number.isFinite(ts)) {
+        if (latestAnalysisAt === null || ts > latestAnalysisAt) {
+          latestAnalysisAt = ts;
+        }
+      }
+    }
+  }
+
+  const codeqlSetup = hasAdvanced ? 'advanced' : hasDefault ? 'default' : 'none';
+  const codeqlLastAnalysisAt = latestAnalysisAt !== null ? new Date(latestAnalysisAt).toISOString() : null;
+
+  return { codeqlSetup, codeqlLastAnalysisAt };
+}
+
+async function fetchSecurityFloor(repo, detail, defaultBranch) {
   // `detail` comes from the gate, which already fetched this exact endpoint and
   // kept only `private`/`visibility`. Re-fetching cost one extra request per
   // repo per run for a field the caller was already holding — pure pressure
@@ -324,15 +380,28 @@ async function fetchSecurityFloor(repo, detail) {
     privateVulnerabilityReporting = null;
   }
 
-  let codeqlConfigured = null;
-  const codeql = await gh(`/repos/${ACCOUNT}/${repo}/code-scanning/default-setup`);
-  if (codeql.ok) {
-    const body = await codeql.json().catch(() => null);
-    if (body) codeqlConfigured = body.state === 'configured' || body.state === 'CodeQL exists';
-  } else if (codeql.status === 404) {
-    codeqlConfigured = false;
-  } else if (codeql.status === 403) {
-    codeqlConfigured = null;
+  // CodeQL: read analyses on the default branch. The `ref` pin is load-bearing:
+  // without it, PR analyses make a repo look covered/fresh when its default branch
+  // is neither. Read the first page (per_page=20) to catch a repo mid-migration
+  // that carries both default and advanced analyses — advanced wins as the superset.
+  let codeqlSetup = null;
+  let codeqlLastAnalysisAt = null;
+  const analyses = await gh(
+    `/repos/${ACCOUNT}/${repo}/code-scanning/analyses?per_page=20&ref=refs/heads/${encodeURIComponent(defaultBranch)}`,
+  );
+  if (analyses.ok) {
+    const body = await analyses.json().catch(() => null);
+    if (body) {
+      const derived = codeqlSetupFrom(body);
+      codeqlSetup = derived.codeqlSetup;
+      codeqlLastAnalysisAt = derived.codeqlLastAnalysisAt;
+    }
+  } else if (analyses.status === 404) {
+    codeqlSetup = 'none';
+    codeqlLastAnalysisAt = null;
+  } else if (analyses.status === 403) {
+    codeqlSetup = null;
+    codeqlLastAnalysisAt = null;
   }
 
   // Reads through `gh` rather than `ghJson`, matching the two calls above.
@@ -365,7 +434,8 @@ async function fetchSecurityFloor(repo, detail) {
           ? false
           : null,
     privateVulnerabilityReporting,
-    codeqlConfigured,
+    codeqlSetup,
+    codeqlLastAnalysisAt,
     defaultBranchRuleset,
   };
 }
@@ -546,7 +616,7 @@ export async function collectRepo(entry, failures) {
 
   const [securityFloor, dependabotOpen, codeScanningOpen, secretScanningOpen, ci] =
     await Promise.all([
-      fetchSecurityFloor(entry.name, detail),
+      fetchSecurityFloor(entry.name, detail, defaultBranch),
       countOpenAlerts(entry.name, 'dependabot'),
       countOpenAlerts(entry.name, 'codeScanning'),
       countOpenAlerts(entry.name, 'secretScanning'),
@@ -737,10 +807,13 @@ export function publicationTally({ governed, candidates, published, unreadable }
  * Which floor flag, when known-false, explains a `null` count as "feature
  * disabled" rather than "read refused". A count with no entry here is never
  * excused. See the rule on `degradedReasons`.
+ *
+ * For `codeqlSetup`, the predicate is `=== 'none'` (explicitly unconfigured),
+ * not `typeof !== 'boolean'` like the old boolean field.
  */
 const FLOOR_FLAG_FOR_COUNT = {
   dependabotOpen: 'dependabotAlerts',
-  codeScanningOpen: 'codeqlConfigured',
+  codeScanningOpen: 'codeqlSetup',
   secretScanningOpen: 'secretScanning',
 };
 
@@ -814,11 +887,22 @@ export function degradedReasons(snapshot) {
       // Excused only for `null`, and only when the flag is known-false: a
       // malformed value is corruption whatever the owner chose, and an unknown
       // flag cannot vouch for anything.
-      if (value === null && floor[FLOOR_FLAG_FOR_COUNT[field]] === false) continue;
+      // For `codeqlSetup`, "known-false" is explicitly `'none'` (unconfigured).
+      const flagKey = FLOOR_FLAG_FOR_COUNT[field];
+      const isKnownFalse = flagKey === 'codeqlSetup' ? floor[flagKey] === 'none' : floor[flagKey] === false;
+      if (value === null && isKnownFalse) continue;
       unknown += 1;
     }
-    for (const value of Object.values(floor)) {
-      if (typeof value !== 'boolean') unknown += 1;
+    for (const [key, value] of Object.entries(floor)) {
+      // `codeqlSetup` is an enum; unknown is `null`. Other floor fields are booleans.
+      // `codeqlLastAnalysisAt` is informational only and does not feed degradation.
+      if (key === 'codeqlSetup') {
+        if (value === null) unknown += 1;
+      } else if (key === 'codeqlLastAnalysisAt') {
+        continue;
+      } else {
+        if (typeof value !== 'boolean') unknown += 1;
+      }
     }
   }
   if (unknown > 0) reasons.push(`${unknown} posture fields unreadable`);

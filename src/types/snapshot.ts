@@ -64,7 +64,8 @@ export type SecurityFloor = {
   pushProtection: boolean | null;
   dependabotAlerts: boolean | null;
   privateVulnerabilityReporting: boolean | null;
-  codeqlConfigured: boolean | null;
+  codeqlSetup: 'default' | 'advanced' | 'none' | null;
+  codeqlLastAnalysisAt: string | null;
   defaultBranchRuleset: boolean | null;
 };
 

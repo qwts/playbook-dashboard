@@ -41,6 +41,9 @@ export const MAX_WORKFLOW_NAME_LENGTH = 128;
 /** The only origin the published dashboard will ever emit a link to. */
 export const ALLOWED_URL_ORIGIN = 'https://github.com';
 
+/** Exported for tests. */
+export { isCodeqlSetup };
+
 /**
  * A URL reaches the snapshot only if it is `https:` at exactly
  * `https://github.com`. Everything else becomes `null`, and the UI renders
@@ -120,6 +123,13 @@ const isCount: Rule = (value) =>
 const isFlag: Rule = (value) =>
   value === null || typeof value === 'boolean' ? null : 'must be null or a boolean';
 
+const isCodeqlSetup: Rule = (value) => {
+  if (value === null) return null;
+  if (typeof value !== 'string') return 'must be null or a string';
+  const valid = new Set(['default', 'advanced', 'none']);
+  return valid.has(value) ? null : `must be one of ${[...valid].join(', ')}`;
+};
+
 const isBool: Rule = (value) => (typeof value === 'boolean' ? null : 'must be a boolean');
 
 function isText(cap: number, { nullable = false } = {}): Rule {
@@ -190,7 +200,8 @@ const SECURITY_FLOOR: Shape = {
   pushProtection: isFlag,
   dependabotAlerts: isFlag,
   privateVulnerabilityReporting: isFlag,
-  codeqlConfigured: isFlag,
+  codeqlSetup: isCodeqlSetup,
+  codeqlLastAnalysisAt: isTimestamp,
   defaultBranchRuleset: isFlag,
 };
 
