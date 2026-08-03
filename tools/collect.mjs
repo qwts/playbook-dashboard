@@ -326,7 +326,10 @@ export async function countOpenAlerts(repo, kind) {
  * A non-empty page in which *no* entry carries a usable `analysis_key` is
  * corruption, not absence, and reads as `null` — `'none'` is load-bearing
  * (`degradedReasons` lets it excuse a failed `codeScanningOpen` read), so a
- * garbled body must make the run louder, never quieter.
+ * garbled body must make the run louder, never quieter. The same rule applies
+ * per-tool: CodeQL entries present but none with a usable key is corrupt
+ * CodeQL data even when a neighbouring Semgrep row is well-formed, so usable
+ * keys are tracked for CodeQL entries specifically, not across the page.
  *
  * Tradeoff accepted knowingly: a newly added workflow that has not run yet reads as
  * `'none'` until its first analysis lands. This is correct — a workflow that has
@@ -340,15 +343,18 @@ export function codeqlSetupFrom(analyses) {
   let hasAdvanced = false;
   let hasDefault = false;
   let sawCodeql = false;
-  let sawUsableKey = false;
+  let sawAnyUsableKey = false;
+  let sawCodeqlUsableKey = false;
   let latestAnalysisAt = null;
 
   for (const entry of analyses) {
-    if (typeof entry?.analysis_key === 'string') sawUsableKey = true;
+    const keyUsable = typeof entry?.analysis_key === 'string';
+    if (keyUsable) sawAnyUsableKey = true;
     if (entry?.tool?.name !== 'CodeQL') continue;
     sawCodeql = true;
 
-    if (typeof entry.analysis_key === 'string') {
+    if (keyUsable) {
+      sawCodeqlUsableKey = true;
       if (entry.analysis_key.startsWith('dynamic/github-code-scanning/')) {
         hasDefault = true;
       } else {
@@ -367,10 +373,14 @@ export function codeqlSetupFrom(analyses) {
     }
   }
 
-  // Shapeless entries: corruption, unknown — never the load-bearing `'none'`.
-  if (!sawUsableKey) return { codeqlSetup: null, codeqlLastAnalysisAt: null };
+  // No entry on the page has a usable key: corruption, unknown — never the
+  // load-bearing `'none'`.
+  if (!sawAnyUsableKey) return { codeqlSetup: null, codeqlLastAnalysisAt: null };
   // Only non-CodeQL tools on the page: the endpoint answered, and CodeQL is absent.
   if (!sawCodeql) return { codeqlSetup: 'none', codeqlLastAnalysisAt: null };
+  // CodeQL entries present but none with a usable key: corrupt CodeQL data,
+  // even when a neighbouring non-CodeQL row is well-formed — unknown again.
+  if (!sawCodeqlUsableKey) return { codeqlSetup: null, codeqlLastAnalysisAt: null };
 
   const codeqlSetup = hasAdvanced ? 'advanced' : hasDefault ? 'default' : 'none';
   const codeqlLastAnalysisAt = latestAnalysisAt !== null ? new Date(latestAnalysisAt).toISOString() : null;
