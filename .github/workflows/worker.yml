@@ -41,7 +41,7 @@ jobs:
       contents: read
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@4e70c773155c2c804e52a487352627010bea1897
         with:
           authorization-only: true
 
