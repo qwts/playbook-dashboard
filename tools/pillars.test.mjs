@@ -66,12 +66,16 @@ test('pinning: local references have no ref to pin and are exempt', () => {
   assert.deepEqual(assessPinning(doc), { status: 'pass', reason: null });
 });
 
-test('pinning: docker references pin by digest', () => {
-  const pinned = { jobs: { a: { steps: [{ uses: 'docker://alpine@sha256:deadbeef' }] } } };
+test('pinning: docker references pin by full digest, and nothing less', () => {
+  const pinned = { jobs: { a: { steps: [{ uses: `docker://alpine@sha256:${'a'.repeat(64)}` }] } } };
   assert.equal(assessPinning(pinned).status, 'pass');
 
   const floating = { jobs: { a: { steps: [{ uses: 'docker://alpine:3.20' }] } } };
   assert.deepEqual(assessPinning(floating), { status: 'fail', reason: 'unpinned-third-party' });
+
+  // A truncated digest is not immutable; "contains @sha256:" must not pass it.
+  const truncated = { jobs: { a: { steps: [{ uses: 'docker://alpine@sha256:deadbeef' }] } } };
+  assert.deepEqual(assessPinning(truncated), { status: 'fail', reason: 'unpinned-third-party' });
 });
 
 test('pinning: reusable-workflow refs at job level are assessed too', () => {
@@ -291,5 +295,56 @@ jobs:
     if (reason !== null) {
       assert.doesNotMatch(reason, /secrets|evil|LEAK/u, `${pillar} reason leaked content`);
     }
+  }
+});
+
+// --- review round: the two P1s and their corrected twins --------------------
+
+test('a checkout selecting the attacker fork by repository is tainted, ref or no ref', () => {
+  const flagged = assessWorkflowFile(`
+on: pull_request_target
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${SHA}
+        with:
+          repository: \${{ github.event.pull_request.head.repo.full_name }}
+      - run: npm test
+`);
+  assert.deepEqual(flagged.triggers, { status: 'fail', reason: 'privileged-trigger-checkout' });
+
+  const corrected = assessWorkflowFile(`
+on: pull_request_target
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${SHA}
+        with:
+          repository: qwts/known-repo
+      - run: npm test
+`);
+  assert.deepEqual(corrected.triggers, { status: 'warn', reason: 'privileged-trigger' });
+});
+
+test('a parser warning is silenced, not copied into a public log', async () => {
+  // The default logLevel routes warnings (e.g. an unresolved custom tag)
+  // through process.emitWarning, and the diagnostic quotes the offending
+  // source line — untrusted workflow content into a public Actions log. The
+  // catch cannot intercept it because nothing throws. Verified here: parse
+  // the tag-bearing document, drain the async warning queue, and assert no
+  // warning fired.
+  const warnings = [];
+  const listener = (warning) => warnings.push(String(warning));
+  process.on('warning', listener);
+  try {
+    const posture = assessWorkflowFile('secret: !vault s3cr3t-value\non: push\njobs: {}');
+    assert.notEqual(posture, null, 'an unresolved tag is a warning, not a parse failure');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(warnings, [], 'parser diagnostics must never reach a log');
+  } finally {
+    process.removeListener('warning', listener);
   }
 });

@@ -327,6 +327,14 @@ function checkActionsPosture(value: unknown, path: string, violations: string[],
     if (workflowCount === 0 && status !== 'none' && status !== undefined) {
       report(violations, ctx, `${path}.${pillar} status must be 'none' when workflowCount is 0`);
     }
+    // A null count means the listing itself failed, so nothing was assessed —
+    // the collector can only emit all-null beside it. An artifact carrying an
+    // assessed verdict next to an unknown count is claiming to have read
+    // files it could not enumerate; refused whole rather than trusted in the
+    // flattering direction.
+    if (workflowCount === null && status !== null && status !== undefined) {
+      report(violations, ctx, `${path}.${pillar} status must be null when workflowCount is null`);
+    }
   }
 }
 
