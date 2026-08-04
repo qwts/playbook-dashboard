@@ -29,8 +29,10 @@ import {
   ALLOWED_URL_ORIGIN,
   MAX_DELTA_LENGTH,
   MAX_WORKFLOW_NAME_LENGTH,
+  PILLARS,
   sanitizeGithubUrl,
 } from '../src/lib/snapshot-schema.ts';
+import { assessWorkflows, MAX_WORKFLOW_FILES, MAX_WORKFLOW_FILE_BYTES } from './pillars.mjs';
 
 // Re-exported so existing importers keep a stable path. The definitions moved
 // to src/lib/snapshot-schema.ts — zero Node dependencies — so the browser can
@@ -519,6 +521,81 @@ async function fetchCi(repo, defaultBranch) {
   };
 }
 
+/** Every pillar carrying the same status/reason — the two degenerate postures. */
+function uniformPosture(workflowCount, status) {
+  const posture = { workflowCount };
+  for (const pillar of PILLARS) posture[pillar] = { status, reason: null };
+  return posture;
+}
+
+/**
+ * Statically assess the repo's workflow files into the Actions pillars.
+ *
+ * **Never call this before the visibility gate.** `repo` is interpolated into
+ * request paths, and the workflow file contents are untrusted input from a
+ * governed repo — nothing read here may reach a throw, a log, or the artifact
+ * except as a status from the closed enum. Reads go through `gh`, never
+ * `ghJson`: a failed read is an unknown pillar, not a dead run.
+ *
+ * Reads are pinned to the default branch for the same reason the CodeQL
+ * analyses read pins `ref` — PR-branch content must not vouch for (or
+ * indict) the default branch.
+ *
+ * A directory-listing 404 is owner-chosen absence: no `.github/workflows`
+ * means `workflowCount: 0` and every pillar `'none'`, the load-bearing state
+ * `degradedReasons` excuses. Every other failure — denied, rate-limited,
+ * timed out, unparseable listing, a file that would not fetch — leaves the
+ * affected pillars `null`: unknown, never a pass claimed from a partial read,
+ * though a `warn`/`fail` found in what was read stands (see pillars.mjs).
+ */
+export async function fetchActionsPosture(repo, defaultBranch) {
+  const ref = encodeURIComponent(defaultBranch);
+  const listing = await gh(`/repos/${ACCOUNT}/${repo}/contents/.github/workflows?ref=${ref}`);
+  if (listing.status === 404) return uniformPosture(0, 'none');
+  if (!listing.ok) return uniformPosture(null, null);
+  const body = await listing.json().catch(() => null);
+  // A non-array body means the path is a file, or the response is garbled.
+  // Either way this is not a readable workflow directory: unknown, not 'none' —
+  // 'none' is load-bearing and corruption must make the run louder.
+  if (!Array.isArray(body)) return uniformPosture(null, null);
+
+  const files = body.filter(
+    (entry) =>
+      entry?.type === 'file' &&
+      typeof entry?.name === 'string' &&
+      /\.ya?ml$/iu.test(entry.name) &&
+      typeof entry?.path === 'string',
+  );
+  if (files.length === 0) return uniformPosture(0, 'none');
+
+  // Caps bound the run, not the truth: `workflowCount` states what exists,
+  // `complete` decides whether a pass may be claimed.
+  let complete = files.length <= MAX_WORKFLOW_FILES;
+  const texts = [];
+  for (const file of files.slice(0, MAX_WORKFLOW_FILES)) {
+    if (Number.isInteger(file.size) && file.size > MAX_WORKFLOW_FILE_BYTES) {
+      complete = false;
+      continue;
+    }
+    const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+    const response = await gh(`/repos/${ACCOUNT}/${repo}/contents/${encodedPath}?ref=${ref}`, {
+      accept: 'application/vnd.github.raw+json',
+    });
+    if (!response.ok) {
+      complete = false;
+      continue;
+    }
+    const text = await response.text().catch(() => null);
+    if (typeof text !== 'string') {
+      complete = false;
+      continue;
+    }
+    texts.push(text);
+  }
+
+  return { workflowCount: files.length, ...assessWorkflows(texts, { complete }) };
+}
+
 /**
  * `true`/`false` only when the manifest says so, `null` when it is silent.
  *
@@ -647,13 +724,14 @@ export async function collectRepo(entry, failures) {
 
   const defaultBranch = detail.default_branch || 'main';
 
-  const [securityFloor, dependabotOpen, codeScanningOpen, secretScanningOpen, ci] =
+  const [securityFloor, dependabotOpen, codeScanningOpen, secretScanningOpen, ci, actionsPosture] =
     await Promise.all([
       fetchSecurityFloor(entry.name, detail, defaultBranch),
       countOpenAlerts(entry.name, 'dependabot'),
       countOpenAlerts(entry.name, 'codeScanning'),
       countOpenAlerts(entry.name, 'secretScanning'),
       fetchCi(entry.name, defaultBranch),
+      fetchActionsPosture(entry.name, defaultBranch),
     ]);
 
   return {
@@ -675,6 +753,7 @@ export async function collectRepo(entry, failures) {
       secretScanningOpen,
     },
     ci,
+    actionsPosture,
   };
 }
 
@@ -937,6 +1016,19 @@ export function degradedReasons(snapshot) {
         continue;
       } else {
         if (typeof value !== 'boolean') unknown += 1;
+      }
+    }
+    // Pillars follow the closed-enum rule: `'none'` is owner-chosen absence
+    // (no workflow files — the codeqlSetup argument, one field over) and does
+    // not degrade; everything outside the enum is a read the collector could
+    // not make. `workflowCount` is not counted separately — an unreadable
+    // listing already surfaces as three unknown pillars, and counting the
+    // count would report the same failed read twice within one source.
+    const posture = repo?.actionsPosture ?? {};
+    for (const pillar of PILLARS) {
+      const status = posture?.[pillar]?.status;
+      if (status !== 'pass' && status !== 'warn' && status !== 'fail' && status !== 'none') {
+        unknown += 1;
       }
     }
   }

@@ -8,7 +8,11 @@
   },
   "withheld": null,
   "unreadable": null,
-  "collection": { "denied": 0, "rateLimited": 0, "failed": 0 },
+  "collection": {
+    "denied": 0,
+    "rateLimited": 0,
+    "failed": 0
+  },
   "repos": [
     {
       "name": "playbook-engineering",
@@ -38,6 +42,21 @@
         "status": "completed",
         "updatedAt": "2026-07-26T17:30:00.000Z",
         "htmlUrl": "https://github.com/qwts/playbook-engineering/actions"
+      },
+      "actionsPosture": {
+        "workflowCount": 7,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "warn",
+          "reason": "no-permissions-block"
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     },
     {
@@ -68,6 +87,21 @@
         "status": "completed",
         "updatedAt": "2026-07-26T16:45:00.000Z",
         "htmlUrl": "https://github.com/qwts/overlook/actions"
+      },
+      "actionsPosture": {
+        "workflowCount": 8,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "warn",
+          "reason": "privileged-trigger"
+        }
       }
     },
     {
@@ -98,6 +132,21 @@
         "status": "completed",
         "updatedAt": "2026-07-26T15:10:00.000Z",
         "htmlUrl": "https://github.com/qwts/image-trail/actions"
+      },
+      "actionsPosture": {
+        "workflowCount": 6,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     },
     {
@@ -128,6 +177,21 @@
         "status": "completed",
         "updatedAt": "2026-07-26T14:00:00.000Z",
         "htmlUrl": "https://github.com/qwts/cartograph/actions"
+      },
+      "actionsPosture": {
+        "workflowCount": 6,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     },
     {
@@ -158,6 +222,21 @@
         "status": "completed",
         "updatedAt": "2026-07-26T13:20:00.000Z",
         "htmlUrl": "https://github.com/qwts/bookmarkit/actions"
+      },
+      "actionsPosture": {
+        "workflowCount": 5,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     },
     {
@@ -188,6 +267,21 @@
         "status": "completed",
         "updatedAt": "2026-07-26T12:00:00.000Z",
         "htmlUrl": "https://github.com/qwts/quorum/actions"
+      },
+      "actionsPosture": {
+        "workflowCount": 2,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     },
     {
@@ -218,6 +312,21 @@
         "status": null,
         "updatedAt": null,
         "htmlUrl": null
+      },
+      "actionsPosture": {
+        "workflowCount": 2,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     },
     {
@@ -248,6 +357,21 @@
         "status": null,
         "updatedAt": null,
         "htmlUrl": null
+      },
+      "actionsPosture": {
+        "workflowCount": 2,
+        "pinning": {
+          "status": "pass",
+          "reason": null
+        },
+        "permissions": {
+          "status": "pass",
+          "reason": null
+        },
+        "triggers": {
+          "status": "pass",
+          "reason": null
+        }
       }
     }
   ]
