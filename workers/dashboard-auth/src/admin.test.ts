@@ -412,6 +412,37 @@ test('a replayed submit acts once and reports the first outcome', async () => {
   }
 });
 
+test('a replay is answered even while the rate window is closed', async () => {
+  const options = { recentAttempts: 0 };
+  const fake = fakeDb(options);
+  const env = await envWith(fake);
+  const stub = stubFetch((call) =>
+    call.method === 'POST'
+      ? githubJson({ id: 1 })
+      : githubJson({ number: 7, title: 'Fix', head: { sha: SHA }, user: { login: 'bot' } }),
+  );
+
+  try {
+    const cookie = await cookieFor(env);
+    await route(env, reviewRequest(cookie, APPROVAL));
+
+    // The submit above took the window's last slot and its response was lost.
+    // The retry exists to learn what happened — telling it rate_limited would
+    // hide the outcome until the window reopens.
+    options.recentAttempts = 10;
+    const callsBefore = stub.calls.length;
+    const retry = await route(env, reviewRequest(cookie, APPROVAL));
+    const body = await retry.json();
+
+    assert.equal(retry.status, 200);
+    assert.equal(body.replay, true);
+    assert.equal(body.outcome, 'succeeded');
+    assert.equal(stub.calls.length, callsBefore, 'a replay costs no GitHub calls at all');
+  } finally {
+    stub.restore();
+  }
+});
+
 test('an idempotency key reused against another pull request is not a replay', async () => {
   const fake = fakeDb();
   const env = await envWith(fake);
