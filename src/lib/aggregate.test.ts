@@ -495,7 +495,12 @@ test('pillar coverage: none repos leave both numerator and denominator', () => {
       name: 'failing',
       actionsPosture: posture({ triggers: { status: 'fail', reason: 'privileged-trigger-checkout' } }),
     }),
-    repo({ name: 'no-workflows', actionsPosture: posture({ workflowCount: 0 }) }),
+    repo({ name: 'no-workflows', actionsPosture: posture({
+        workflowCount: 0,
+        pinning: { status: 'none', reason: null },
+        permissions: { status: 'none', reason: null },
+        triggers: { status: 'none', reason: null },
+      }) }),
   ];
 
   const coverage = pillarCoverage(repos);
@@ -511,7 +516,12 @@ test('pillar coverage: none repos leave both numerator and denominator', () => {
 test('pillar coverage: the invariant total + noWorkflows === published rows holds', () => {
   const repos = [
     repo({ name: 'a', actionsPosture: posture() }),
-    repo({ name: 'b', actionsPosture: posture({ workflowCount: 0 }) }),
+    repo({ name: 'b', actionsPosture: posture({
+        workflowCount: 0,
+        pinning: { status: 'none', reason: null },
+        permissions: { status: 'none', reason: null },
+        triggers: { status: 'none', reason: null },
+      }) }),
     repo({ name: 'c', actionsPosture: { ...UNREAD_POSTURE } }),
   ];
   const coverage = pillarCoverage(repos);
@@ -571,7 +581,12 @@ test('pillar coverage: evaluated is false only when no repo has a known workflow
 test('pillar coverage: green only when every assessed repo passes and nothing is unknown', () => {
   const allClean = pillarCoverage([
     repo({ name: 'a', actionsPosture: posture() }),
-    repo({ name: 'b', actionsPosture: posture({ workflowCount: 0 }) }),
+    repo({ name: 'b', actionsPosture: posture({
+        workflowCount: 0,
+        pinning: { status: 'none', reason: null },
+        permissions: { status: 'none', reason: null },
+        triggers: { status: 'none', reason: null },
+      }) }),
   ]);
   assert.equal(toneForPillarCoverage(allClean), 'ok');
 
@@ -583,7 +598,12 @@ test('pillar coverage: green only when every assessed repo passes and nothing is
   ]);
   assert.equal(toneForPillarCoverage(warned), 'warn');
 
-  const allNone = pillarCoverage([repo({ name: 'a', actionsPosture: posture({ workflowCount: 0 }) })]);
+  const allNone = pillarCoverage([repo({ name: 'a', actionsPosture: posture({
+        workflowCount: 0,
+        pinning: { status: 'none', reason: null },
+        permissions: { status: 'none', reason: null },
+        triggers: { status: 'none', reason: null },
+      }) })]);
   assert.equal(toneForPillarCoverage(allNone), 'muted');
 });
 
@@ -600,4 +620,24 @@ test('pillar coverage: a corrupted status in the denominator is unknown, never c
   assert.ok(coverage.evaluated);
   assert.equal(coverage.unknown, 1);
   assert.equal(coverage.clean, 0);
+});
+
+test('pillar coverage: a zero count beside assessed statuses cannot shrink the denominator', () => {
+  const coverage = pillarCoverage([
+    repo({ name: 'honest', actionsPosture: posture() }),
+    repo({
+      name: 'corrupt',
+      // The validator refuses this at publish time; a stale or hand-edited
+      // artifact carrying it must not vanish from the denominator here.
+      actionsPosture: posture({ workflowCount: 0 }),
+    }),
+  ]);
+
+  assert.deepEqual(coverage, {
+    evaluated: true,
+    clean: 1,
+    unknown: 1,
+    total: 2,
+    noWorkflows: 0,
+  });
 });

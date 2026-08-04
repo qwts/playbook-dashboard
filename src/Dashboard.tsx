@@ -86,7 +86,10 @@ function Glyph({ glyph, word }: { glyph: string; word: string }) {
 const PILLAR_FINDING_TEXT: Record<string, string> = {
   'unpinned-third-party': 'Third-party actions run from a mutable tag rather than a pinned commit.',
   'unpinned-first-party': 'First-party actions run from a mutable tag rather than a pinned commit.',
-  'write-all': 'Workflows are granted write access to everything by default.',
+  // "by default" was dropped from the handoff wording: this code fires only on
+  // an *explicit* write-all grant, and the literal must claim exactly what the
+  // detector found (flagged to Design; the deletion is pending their blessing).
+  'write-all': 'Workflows are granted write access to everything.',
   'no-permissions-block': 'Workflows declare no permissions and inherit the repository default.',
   'privileged-trigger-checkout': 'A privileged trigger checks out untrusted code.',
   'secrets-in-privileged-trigger': 'A privileged trigger exposes repository secrets to untrusted code.',

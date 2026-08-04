@@ -237,12 +237,21 @@ export function pillarCoverage(repos: RepoSnapshot[]): PillarCoverage {
     const count = repo.actionsPosture?.workflowCount;
     const countKnown = typeof count === 'number' && Number.isInteger(count) && count >= 0;
     if (countKnown) anyKnownCount = true;
-    if (countKnown && count === 0) {
-      noWorkflows += 1;
-      continue;
-    }
 
     const statuses = PILLARS.map((pillar) => repo.actionsPosture?.[pillar]?.status);
+    if (countKnown && count === 0) {
+      // Only a row whose pillars all agree it has nothing to assess leaves
+      // the denominator. A zero count beside an assessed status is a
+      // contradiction the validator refuses at publish time; here it would
+      // let a corrupted row *shrink* the denominator — the flattering
+      // direction — so it stays in `total` and counts unknown instead.
+      if (statuses.every((status) => status === 'none')) {
+        noWorkflows += 1;
+        continue;
+      }
+      unknown += 1;
+      continue;
+    }
     if (statuses.every((status) => status === 'pass')) clean += 1;
     // In-denominator repos: `'none'` here contradicts the count beside it, so
     // it is corruption — unknown, never silently clean, never silently ignored.

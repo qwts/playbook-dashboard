@@ -49,6 +49,17 @@ const UNTRUSTED_HEAD_CONTEXTS = [
   'github.event.workflow_run.head',
 ];
 
+/**
+ * Contexts that select an attacker's *repository* rather than a ref. Under
+ * `pull_request_target`, `repository: ${{ github.event.pull_request.head.repo
+ * .full_name }}` with no `ref:` at all checks out the fork's default branch —
+ * directly executable untrusted code that a ref-only check never sees.
+ */
+const UNTRUSTED_REPO_CONTEXTS = [
+  'github.event.pull_request.head.repo',
+  'github.event.workflow_run.head_repository',
+];
+
 /** Triggers that run with base-repo secrets and a write-capable token on stranger-caused events. */
 const PRIVILEGED_TRIGGERS = new Set(['pull_request_target', 'workflow_run']);
 
@@ -114,7 +125,9 @@ export function assessPinning(doc) {
   for (const ref of usesRefs(doc)) {
     if (ref.startsWith('./')) continue;
     if (ref.startsWith('docker://')) {
-      if (!ref.includes('@sha256:')) return { status: 'fail', reason: 'unpinned-third-party' };
+      // A full 64-hex digest, nothing less: a truncated or malformed digest is
+      // not immutable, and "contains @sha256:" would pass it as pinned.
+      if (!/@sha256:[0-9a-f]{64}$/.test(ref)) return { status: 'fail', reason: 'unpinned-third-party' };
       continue;
     }
     const at = ref.lastIndexOf('@');
@@ -188,8 +201,19 @@ export function assessTriggers(doc, text) {
     for (const step of steps) {
       if (typeof step?.uses !== 'string' || !/^actions\/checkout(?:[@/]|$)/.test(step.uses)) continue;
       const ref = step?.with?.ref;
-      if (typeof ref !== 'string') continue;
-      if (UNTRUSTED_HEAD_CONTEXTS.some((context) => ref.includes(context))) taintedCheckout = true;
+      if (typeof ref === 'string' && UNTRUSTED_HEAD_CONTEXTS.some((context) => ref.includes(context))) {
+        taintedCheckout = true;
+      }
+      // `repository:` selecting the attacker's fork is tainted with or
+      // without a `ref:` — omitting the ref checks out the fork's default
+      // branch, which is still the attacker's code.
+      const repository = step?.with?.repository;
+      if (
+        typeof repository === 'string' &&
+        UNTRUSTED_REPO_CONTEXTS.some((context) => repository.includes(context))
+      ) {
+        taintedCheckout = true;
+      }
     }
   }
 
@@ -210,7 +234,13 @@ export function assessWorkflowFile(text) {
   if (typeof text !== 'string') return null;
   let doc;
   try {
-    doc = parse(text);
+    // `logLevel: 'error'` is load-bearing, not cosmetic. The default level
+    // routes parser *warnings* (e.g. an unresolved custom tag) through
+    // `process.emitWarning`, and the diagnostic quotes the offending source
+    // line — untrusted workflow content copied into a public Actions log,
+    // which the catch below cannot intercept because nothing throws. Errors
+    // still throw at this level; verified empirically for both.
+    doc = parse(text, { logLevel: 'error' });
   } catch {
     return null;
   }

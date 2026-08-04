@@ -548,3 +548,27 @@ test('the fully-unread posture — the degraded shape — validates', () => {
   });
   assert.deepEqual(validateSnapshot(valid({ repos: [unread] })), []);
 });
+
+test('an assessed verdict beside an unknown count is refused — nothing was enumerable', () => {
+  // The collector can only emit all-null beside a null count; an artifact
+  // claiming a pass (or any verdict) for files it could not list is trusted
+  // in the flattering direction exactly once, here, and refused.
+  for (const status of ['pass', 'warn', 'fail']) {
+    const reason =
+      status === 'warn' ? 'unpinned-first-party' : status === 'fail' ? 'unpinned-third-party' : null;
+    const row = repo({
+      actionsPosture: {
+        workflowCount: null,
+        pinning: { status, reason },
+        permissions: { status: null, reason: null },
+        triggers: { status: null, reason: null },
+      },
+    });
+    assert.ok(
+      validateSnapshot(valid({ repos: [row] })).some((v) =>
+        v.includes('status must be null when workflowCount is null'),
+      ),
+      `${status} beside a null count should be refused`,
+    );
+  }
+});
