@@ -54,6 +54,17 @@ function repo(overrides = {}) {
       updatedAt: new Date().toISOString(),
       htmlUrl: 'https://github.com/qwts/example/actions',
     },
+    actionsPosture: posture(),
+    ...overrides,
+  };
+}
+
+function posture(overrides = {}) {
+  return {
+    workflowCount: 2,
+    pinning: { status: 'pass', reason: null },
+    permissions: { status: 'pass', reason: null },
+    triggers: { status: 'pass', reason: null },
     ...overrides,
   };
 }
@@ -413,4 +424,127 @@ test('a non-object, or a repos field that is not an array, fails closed', () => 
     assert.ok(validateSnapshot(bad).length > 0, `${JSON.stringify(bad)} is not a snapshot`);
   }
   assert.ok(validateSnapshot(valid({ repos: {} })).includes('snapshot.repos must be an array'));
+});
+
+// --- actionsPosture: the pillar contract -----------------------------------
+
+test('the pillar subtree is a closed key set at every level', () => {
+  const cases = [
+    [repo({ actionsPosture: posture({ extra: true }) }), 'snapshot.repos[0].actionsPosture.extra'],
+    [
+      repo({ actionsPosture: posture({ pinning: { status: 'pass', reason: null, file: 'ci.yml' } }) }),
+      'snapshot.repos[0].actionsPosture.pinning',
+    ],
+  ];
+  for (const [row, expected] of cases) {
+    const violations = validateSnapshot(valid({ repos: [row] }));
+    assert.ok(
+      violations.some((v) => v.startsWith(expected)),
+      `${expected} should have been rejected, got: ${JSON.stringify(violations)}`,
+    );
+  }
+});
+
+test('a repo without actionsPosture is refused — the key is required, not optional', () => {
+  const row = repo();
+  delete row.actionsPosture;
+  const violations = validateSnapshot(valid({ repos: [row] }));
+  assert.ok(violations.some((v) => v.includes('actionsPosture')));
+});
+
+test('pillar status is a closed enum or null', () => {
+  for (const good of ['pass', 'warn', 'fail', null]) {
+    const reason =
+      good === 'warn' ? 'unpinned-first-party' : good === 'fail' ? 'unpinned-third-party' : null;
+    const row = repo({ actionsPosture: posture({ pinning: { status: good, reason } }) });
+    assert.deepEqual(validateSnapshot(valid({ repos: [row] })), [], `${good} should pass`);
+  }
+  for (const bad of ['ok', 'PASS', true, 0, {}]) {
+    const row = repo({ actionsPosture: posture({ pinning: { status: bad, reason: null } }) });
+    assert.notDeepEqual(validateSnapshot(valid({ repos: [row] })), [], `${JSON.stringify(bad)} should fail`);
+  }
+});
+
+test('a reasonless fail is unactionable and a reasoned pass smuggles data — both refused', () => {
+  const reasonless = repo({ actionsPosture: posture({ triggers: { status: 'fail', reason: null } }) });
+  assert.ok(
+    validateSnapshot(valid({ repos: [reasonless] })).some((v) =>
+      v.includes('reason must accompany'),
+    ),
+  );
+
+  const smuggling = repo({
+    actionsPosture: posture({ pinning: { status: 'pass', reason: 'unpinned-third-party' } }),
+  });
+  assert.ok(
+    validateSnapshot(valid({ repos: [smuggling] })).some((v) => v.includes('reason must be null')),
+  );
+});
+
+test('a reason outside the pillar vocabulary, or from another pillar, is refused', () => {
+  const foreign = repo({
+    // A real code — but pinning's, not triggers'. Vocabularies are per pillar.
+    actionsPosture: posture({ triggers: { status: 'fail', reason: 'unpinned-third-party' } }),
+  });
+  assert.ok(
+    validateSnapshot(valid({ repos: [foreign] })).some((v) => v.includes('not in the published vocabulary')),
+  );
+
+  const invented = repo({
+    actionsPosture: posture({ pinning: { status: 'fail', reason: 'ci.yml line 14' } }),
+  });
+  assert.ok(
+    validateSnapshot(valid({ repos: [invented] })).some((v) => v.includes('not in the published vocabulary')),
+  );
+});
+
+test('a reason must match its bound severity — a warn wearing a fail code is refused', () => {
+  const inflated = repo({
+    actionsPosture: posture({ pinning: { status: 'warn', reason: 'unpinned-third-party' } }),
+  });
+  assert.ok(
+    validateSnapshot(valid({ repos: [inflated] })).some((v) => v.includes('does not match its status severity')),
+  );
+});
+
+test('none is repo-wide: it requires a zero count, and a zero count requires it everywhere', () => {
+  const noneRow = repo({
+    actionsPosture: {
+      workflowCount: 0,
+      pinning: { status: 'none', reason: null },
+      permissions: { status: 'none', reason: null },
+      triggers: { status: 'none', reason: null },
+    },
+  });
+  assert.deepEqual(validateSnapshot(valid({ repos: [noneRow] })), []);
+
+  const dressedAbsence = repo({ actionsPosture: posture({ pinning: { status: 'none', reason: null } }) });
+  assert.ok(
+    validateSnapshot(valid({ repos: [dressedAbsence] })).some((v) =>
+      v.includes("status 'none' requires workflowCount 0"),
+    ),
+    'none beside a non-zero count dresses an unread pillar as owner-chosen absence',
+  );
+
+  const phantomFindings = repo({
+    actionsPosture: posture({ workflowCount: 0 }),
+  });
+  assert.ok(
+    validateSnapshot(valid({ repos: [phantomFindings] })).some((v) =>
+      v.includes("must be 'none' when workflowCount is 0"),
+    ),
+    'a zero count beside an assessed status claims findings about files it says do not exist',
+  );
+});
+
+test('the fully-unread posture — the degraded shape — validates', () => {
+  const unread = repo({
+    actionsPosture: {
+      workflowCount: null,
+      pinning: { status: null, reason: null },
+      permissions: { status: null, reason: null },
+      triggers: { status: null, reason: null },
+    },
+  });
+  assert.deepEqual(validateSnapshot(valid({ repos: [unread] })), []);
 });

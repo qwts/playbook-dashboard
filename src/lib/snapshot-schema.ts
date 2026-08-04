@@ -78,6 +78,49 @@ export function sanitizeGithubUrl(value: unknown): string | null {
 export const STALE_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The Actions security pillars, in canonical order.
+ *
+ * This constant is the order — payload key order is never read. The renderer
+ * iterates it (the `FloorBits` fixed-array pattern), the validator's shape is
+ * derived from it, and the collector writes keys in the same order for diff
+ * legibility only. A cached, hand-edited, or re-serialized artifact cannot
+ * reorder the badges, and findings render in pillar order, never severity
+ * order — a severity-ordered list is a ranking, and pillars do not get one.
+ *
+ * Phase 2 appends `injection` and `runners` here, nowhere else.
+ */
+export const PILLARS = ['pinning', 'permissions', 'triggers'] as const;
+
+export type PillarName = (typeof PILLARS)[number];
+
+/**
+ * The closed reason vocabulary, per pillar, each code bound to the only
+ * status it may accompany.
+ *
+ * Reason codes name the *class* of problem, never the instance: no workflow
+ * file, job, line, or count travels in the artifact. The prose a reader sees
+ * is a UI-owned literal keyed by these codes — nothing from the snapshot is
+ * rendered as text. The severity binding is validated: a `warn` wearing a
+ * fail-class code (or vice versa) is an artifact smuggling a claim the
+ * detector did not make.
+ */
+export const PILLAR_REASONS: Record<PillarName, Record<string, 'warn' | 'fail'>> = {
+  pinning: {
+    'unpinned-third-party': 'fail',
+    'unpinned-first-party': 'warn',
+  },
+  permissions: {
+    'write-all': 'fail',
+    'no-permissions-block': 'warn',
+  },
+  triggers: {
+    'secrets-in-privileged-trigger': 'fail',
+    'privileged-trigger-checkout': 'fail',
+    'privileged-trigger': 'warn',
+  },
+};
+
+/**
  * Length caps on every string that reaches the page.
  *
  * The manifest is untrusted input and so is a cached snapshot, so unbounded
@@ -128,6 +171,44 @@ const isCodeqlSetup: Rule = (value) => {
 };
 
 const isBool: Rule = (value) => (typeof value === 'boolean' ? null : 'must be a boolean');
+
+const PILLAR_STATUSES = new Set(['pass', 'warn', 'fail', 'none']);
+
+/**
+ * One pillar's `{ status, reason }`, checked as a unit because the pairing is
+ * the contract: a reasonless `warn`/`fail` is unactionable, and a reasoned
+ * `pass` is a key smuggling data. `none` and `null` carry no reason either —
+ * absence and unknown explain themselves.
+ *
+ * The reason must come from this pillar's own closed vocabulary, and its bound
+ * severity must equal the status it accompanies. Anything else is an artifact
+ * asserting a claim the detector did not make, and it is refused whole.
+ */
+function isPillar(pillar: PillarName): Rule {
+  return (value) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return 'must be an object';
+    }
+    for (const key of Object.keys(value)) {
+      if (key !== 'status' && key !== 'reason') return 'has a key not in the published schema';
+    }
+    const { status, reason } = value as { status?: unknown; reason?: unknown };
+    if (!Object.hasOwn(value, 'status')) return 'is missing status';
+    if (!Object.hasOwn(value, 'reason')) return 'is missing reason';
+    if (status !== null && !(typeof status === 'string' && PILLAR_STATUSES.has(status))) {
+      return `status must be null or one of ${[...PILLAR_STATUSES].join(', ')}`;
+    }
+    if (status === 'warn' || status === 'fail') {
+      if (typeof reason !== 'string') return 'reason must accompany a warn or fail status';
+      const severity = PILLAR_REASONS[pillar][reason];
+      if (severity === undefined) return 'reason is not in the published vocabulary';
+      if (severity !== status) return 'reason does not match its status severity';
+      return null;
+    }
+    if (reason !== null) return 'reason must be null unless status is warn or fail';
+    return null;
+  };
+}
 
 function isText(cap: number, { nullable = false } = {}): Rule {
   return (value) => {
@@ -208,6 +289,47 @@ const SECURITY: Shape = {
   secretScanningOpen: isCount,
 };
 
+/**
+ * Derived from `PILLARS` so the shape cannot drift from the canonical order,
+ * plus `workflowCount`. The cross-field rules — `none` requires a known-zero
+ * count, and a known-zero count requires `none` everywhere — span sibling
+ * keys, so they live in `checkActionsPosture` below rather than in the
+ * generic walk.
+ */
+const ACTIONS_POSTURE: Shape = Object.fromEntries<Rule>([
+  ['workflowCount', isCount] as [string, Rule],
+  ...PILLARS.map((pillar): [string, Rule] => [pillar, isPillar(pillar)]),
+]);
+
+/**
+ * The whole `actionsPosture` subtree: structure via the generic walk, then the
+ * consistency the walk cannot see.
+ *
+ * `none` is repo-wide by construction — `workflowCount === 0` sets every
+ * pillar to `none`, and a repo with workflows can never carry one. An artifact
+ * violating that pairing is claiming an absence it also denies, in whichever
+ * direction, and both directions are refused: `none` beside a non-zero (or
+ * unknown) count dresses an unread pillar as owner-chosen absence, and a
+ * zero count beside an assessed status claims findings about files it also
+ * says do not exist.
+ */
+function checkActionsPosture(value: unknown, path: string, violations: string[], ctx: Ctx): void {
+  checkShape(value, ACTIONS_POSTURE, path, violations, ctx);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return;
+
+  const posture = value as Record<string, { status?: unknown } | null | undefined>;
+  const workflowCount = (value as { workflowCount?: unknown }).workflowCount;
+  for (const pillar of PILLARS) {
+    const status = posture[pillar]?.status;
+    if (status === 'none' && workflowCount !== 0) {
+      report(violations, ctx, `${path}.${pillar} status 'none' requires workflowCount 0`);
+    }
+    if (workflowCount === 0 && status !== 'none' && status !== undefined) {
+      report(violations, ctx, `${path}.${pillar} status must be 'none' when workflowCount is 0`);
+    }
+  }
+}
+
 const REPO: Shape = {
   name: isText(CAPS.name),
   // Only `public` may be published at all. The field is retained so a stale or
@@ -222,6 +344,7 @@ const REPO: Shape = {
   securityFloor: SECURITY_FLOOR,
   security: SECURITY,
   ci: CI,
+  actionsPosture: null, // handled explicitly: cross-field rules the walk cannot see
 };
 
 export const SNAPSHOT: Shape = {
@@ -347,6 +470,14 @@ export function validateSnapshot(
     for (const [index, repo] of snap.repos.entries()) {
       if (full(violations, ctx)) break;
       checkShape(repo, REPO, `snapshot.repos[${index}]`, violations, ctx);
+      // Marked `null` in REPO, so the walk neither requires nor descends it —
+      // presence and everything below it are this call's job.
+      checkActionsPosture(
+        (repo as { actionsPosture?: unknown } | null)?.actionsPosture,
+        `snapshot.repos[${index}].actionsPosture`,
+        violations,
+        ctx,
+      );
     }
 
     const names = snap.repos.map((repo: unknown) => (repo as { name?: unknown } | null)?.name);
