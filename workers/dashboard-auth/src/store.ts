@@ -101,6 +101,38 @@ export async function deleteActorToken(db: Database, sid: string): Promise<void>
   await db.prepare('DELETE FROM actor_tokens WHERE sid = ?').bind(sid).run();
 }
 
+/**
+ * Reaps rows whose refresh token has expired — nothing can ever use them
+ * again, so holding them is pure liability. A NULL refresh expiry is left
+ * alone: it means the App has token expiry turned off and the token still
+ * works, not that the row is dead.
+ */
+export async function reapExpiredActorTokens(db: Database, now: number): Promise<void> {
+  await db
+    .prepare(
+      `DELETE FROM actor_tokens
+        WHERE refresh_expires_at IS NOT NULL AND refresh_expires_at < ?`,
+    )
+    .bind(now)
+    .run();
+}
+
+/**
+ * Deletes every row for this identity except the one just written. A fresh
+ * sign-in stores a fresh token; whatever an earlier session left behind is a
+ * credential that session can no longer reach, kept alive for nobody.
+ */
+export async function deleteSupersededActorTokens(
+  db: Database,
+  identity: Identity,
+  keepSid: string,
+): Promise<void> {
+  await db
+    .prepare('DELETE FROM actor_tokens WHERE provider = ? AND subject = ? AND sid <> ?')
+    .bind(identity.provider, identity.subject, keepSid)
+    .run();
+}
+
 export type AuditAttempt = {
   /** The client's idempotency key, which is also the primary key. */
   id: string;

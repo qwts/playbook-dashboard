@@ -486,6 +486,15 @@ successful call is a false all-clear, and this repository errs in the first
 direction. The client's idempotency key is the row's primary key, so a double
 submit collides with the row it already wrote instead of approving twice.
 
+**A stored token does not outlive every path that could use it.** The session
+cookie lasts eight hours; the refresh token its row seals is honored for
+months. Deleting rows only on sign-out would leave routine daily sign-ins
+accreting live-credential rows nothing ever reads again. So the privileged
+path opportunistically reaps rows whose refresh expiry has passed, and a fresh
+admin sign-in deletes any prior row for the same identity — the session that
+wrote it can no longer reach it. Best effort in both cases: cleanup must never
+be the reason a sign-in or an action fails.
+
 **Reading and acting have different clocks.** The session lasts eight hours
 because re-authenticating to read a dashboard hourly is theatre. Acting
 requires authentication within the last hour, because a cookie lifted from a

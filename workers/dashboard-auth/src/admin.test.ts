@@ -93,7 +93,15 @@ function fakeDb(options: { failAuditInsert?: boolean; recentAttempts?: number } 
             return { meta: { changes: 1 } };
           }
           if (sql.includes('DELETE FROM actor_tokens')) {
-            tokens.delete(String(args[0]));
+            if (sql.includes('refresh_expires_at')) {
+              // The reaper: expired refresh expiries go, NULL stays.
+              const cutoff = Number(args[0]);
+              for (const [sid, row] of [...tokens]) {
+                if (row.refresh !== null && row.refresh < cutoff) tokens.delete(sid);
+              }
+            } else {
+              tokens.delete(String(args[0]));
+            }
             return { meta: { changes: 1 } };
           }
           return { meta: { changes: 1 } };
@@ -483,6 +491,34 @@ test('a privileged response is private and uncacheable', async () => {
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
     assert.equal(response.headers.get('Vary'), 'Cookie');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a privileged request reaps rows whose refresh expiry has passed', async () => {
+  const fake = fakeDb();
+  const env = await envWith(fake);
+  const now = Math.floor(Date.now() / 1000);
+
+  // A row an expired session left behind, and one from an App with token
+  // expiry turned off — the first is dead, the second still works.
+  fake.tokens.set('stale-session', { secret: 'sealed', access: now - 40_000, refresh: now - 60 });
+  fake.tokens.set('no-expiry', { secret: 'sealed', access: null, refresh: null });
+
+  const stub = stubFetch(() => githubJson([]));
+
+  try {
+    const cookie = await cookieFor(env);
+    const request = new Request(`${ORIGIN}/admin/repos`, {
+      headers: { Cookie: cookie, 'x-dashboard-action': '1' },
+    });
+    const response = await route(env, request);
+
+    assert.equal(response.status, 200);
+    assert.equal(fake.tokens.has('stale-session'), false, 'the dead row was reaped');
+    assert.equal(fake.tokens.has('no-expiry'), true, 'NULL refresh expiry is not dead');
+    assert.equal(fake.tokens.has('session-1'), true, 'the live session keeps its token');
   } finally {
     stub.restore();
   }

@@ -35,7 +35,7 @@ import {
 import type { SessionClaims } from './session.ts';
 import { readSession } from './session.ts';
 import type { Identity } from './store.ts';
-import { beginAudit, completeAudit, countRecentActions } from './store.ts';
+import { beginAudit, completeAudit, countRecentActions, reapExpiredActorTokens } from './store.ts';
 
 /** Attempts per identity per minute, counted from the audit log itself. */
 const RATE_WINDOW_SECONDS = 60;
@@ -74,6 +74,11 @@ async function authorize(
   }
 
   if (!env.DB) return privateJson({ error: 'privileges_unavailable' }, { status: 503 });
+
+  // Opportunistic hygiene, best effort: rows whose refresh expiry has passed
+  // are dead credentials nothing can use, and the privileged path is the only
+  // traffic guaranteed to come from someone who cares that they are gone.
+  await reapExpiredActorTokens(env.DB, nowSeconds()).catch(() => undefined);
 
   if (options.mutating && !isFreshEnoughToAct(env, session.iat, nowSeconds())) {
     return privateJson({ error: 'reauth_required' }, { status: 401 });

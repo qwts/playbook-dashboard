@@ -120,9 +120,14 @@ wrangler d1 execute playbook-dashboard-auth --remote --file=schema.sql
 ```
 
 Three tables: `identities` (sign-in tracking, best effort), `actor_tokens`
-(sealed, one row per privileged session, deleted on sign-out), and `audit_log`
-(append-only, written before the action). Without the binding, `/admin/*`
-returns `503 privileges_unavailable` and sign-in is unaffected.
+(sealed, one row per privileged session), and `audit_log` (append-only,
+written before the action). Without the binding, `/admin/*` returns
+`503 privileges_unavailable` and sign-in is unaffected.
+
+An `actor_tokens` row is deleted on sign-out, superseded when the same
+identity signs in fresh, and reaped opportunistically on privileged requests
+once its refresh expiry has passed — no row outlives every path that could
+use it.
 
 `identities` stores only the provider, the provider's stable subject, first and
 last seen timestamps, and a sign-in counter — no logins, no emails. The subject
