@@ -639,6 +639,12 @@ function healthyRepo(overrides = {}) {
       codeqlLastAnalysisAt: null,
       defaultBranchRuleset: true,
     },
+    actionsPosture: {
+      workflowCount: 2,
+      pinning: { status: 'pass', reason: null },
+      permissions: { status: 'pass', reason: null },
+      triggers: { status: 'pass', reason: null },
+    },
     ...overrides,
   };
 }
@@ -810,6 +816,51 @@ test('nothing hostile in a snapshot reaches the reason string', () => {
 test('a degraded snapshot never silently keeps its shape', () => {
   assert.deepEqual(degradedReasons(undefined), [], 'no snapshot is not a claim about one');
   assert.deepEqual(degradedReasons({}), []);
+});
+
+test('an unread pillar is degradation; owner-chosen absence is not', () => {
+  const unreadPillar = healthyRepo({
+    actionsPosture: {
+      ...healthyRepo().actionsPosture,
+      triggers: { status: null, reason: null },
+    },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [unreadPillar] })), ['1 posture fields unreadable']);
+
+  // A fully-unread posture is three unknown pillars, not four: workflowCount
+  // is not counted separately, because the same failed listing would then be
+  // reported twice from one source.
+  const unreadPosture = healthyRepo({
+    actionsPosture: {
+      workflowCount: null,
+      pinning: { status: null, reason: null },
+      permissions: { status: null, reason: null },
+      triggers: { status: null, reason: null },
+    },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [unreadPosture] })), ['3 posture fields unreadable']);
+
+  // No workflows is the codeqlSetup argument one field over: a permanent,
+  // owner-chosen state that must not redden every hourly run forever.
+  const noWorkflows = healthyRepo({
+    actionsPosture: {
+      workflowCount: 0,
+      pinning: { status: 'none', reason: null },
+      permissions: { status: 'none', reason: null },
+      triggers: { status: 'none', reason: null },
+    },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [noWorkflows] })), []);
+
+  // Assessed verdicts — including bad news — are reads that *succeeded*.
+  const failing = healthyRepo({
+    actionsPosture: {
+      ...healthyRepo().actionsPosture,
+      pinning: { status: 'fail', reason: 'unpinned-third-party' },
+      permissions: { status: 'warn', reason: 'no-permissions-block' },
+    },
+  });
+  assert.deepEqual(degradedReasons(snap({ repos: [failing] })), []);
 });
 
 test('the committed fallback fixture is not itself degraded', () => {
@@ -1179,10 +1230,31 @@ function githubApiStub(overrides = {}) {
     ...overrides.run,
   };
 
+  const workflow = [
+    'on: push',
+    'permissions:',
+    '  contents: read',
+    'jobs:',
+    '  build:',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    `      - uses: actions/checkout@${'a'.repeat(40)}`,
+    ...(overrides.workflowExtra ?? []),
+  ].join('\n');
+
   return async (url) => {
     const path = String(url);
     if (path.includes('/private-vulnerability-reporting')) {
       return Response.json({ enabled: true });
+    }
+    if (path.includes('/contents/.github/workflows/')) {
+      // The raw-accept file fetch; body is workflow text, not JSON.
+      return new Response(workflow, { status: 200 });
+    }
+    if (path.includes('/contents/.github/workflows?')) {
+      return Response.json([
+        { type: 'file', name: 'ci.yml', path: '.github/workflows/ci.yml', size: workflow.length },
+      ]);
     }
     if (path.includes('/code-scanning/default-setup')) {
       return Response.json({ state: 'configured' });
@@ -1234,6 +1306,35 @@ test('a collected row satisfies the schema it will be published under', async ()
   });
 
   assert.deepEqual(violations, [], 'collector output failed its own publication contract');
+});
+
+test('an assessed posture round-trips: the stub workflow is clean and reads as such', async () => {
+  const row = await withStubbedFetch(githubApiStub(), () =>
+    collectRepo({ name: 'example', status: 'active', publish: true }, []),
+  );
+
+  assert.deepEqual(row.actionsPosture, {
+    workflowCount: 1,
+    pinning: { status: 'pass', reason: null },
+    permissions: { status: 'pass', reason: null },
+    triggers: { status: 'pass', reason: null },
+  });
+  assert.deepEqual(validateSnapshot(envelope(row)), []);
+});
+
+test('a defective workflow round-trips as a verdict, never as content', async () => {
+  const row = await withStubbedFetch(
+    githubApiStub({
+      workflowExtra: ['      - uses: vendor/tool@v1  # unpinned third-party'],
+    }),
+    () => collectRepo({ name: 'example', status: 'active', publish: true }, []),
+  );
+
+  assert.deepEqual(row.actionsPosture.pinning, { status: 'fail', reason: 'unpinned-third-party' });
+  // The artifact carries the code, not the workflow: no file name, no ref.
+  assert.ok(!JSON.stringify(row.actionsPosture).includes('vendor'));
+  assert.ok(!JSON.stringify(row.actionsPosture).includes('ci.yml'));
+  assert.deepEqual(validateSnapshot(envelope(row)), []);
 });
 
 test('a hostile API response still yields a publishable row, not a publish outage', async () => {
