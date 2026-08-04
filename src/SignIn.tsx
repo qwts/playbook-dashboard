@@ -81,6 +81,10 @@ export function SignIn({ error, pending, onSignIn }: SignInProps) {
             {error}
           </p>
         ) : null}
+
+        <p className="signin-disclosure">
+          Sign-ins are recorded: which provider, the account&rsquo;s stable ID with it, and when.
+        </p>
       </div>
     </main>
   );

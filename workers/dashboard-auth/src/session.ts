@@ -8,11 +8,15 @@ export const TX_COOKIE = 'dashboard_oauth_tx';
 /** Lifetime of an in-flight login (authorize redirect through code exchange). */
 const TX_TTL_SECONDS = 600;
 
+/**
+ * Opaque identifiers only, on purpose. The cookie is signed, not encrypted —
+ * its payload is readable wherever the cookie travels — so display fields
+ * (login, email) stay out of it. The SPA gets what it may show from
+ * `/auth/me`; the audit log gets the login from the sealed actor bundle.
+ */
 export type SessionClaims = {
   provider: Provider;
   subject: string;
-  login: string | null;
-  email: string | null;
   /**
    * Names this sign-in, so a stored GitHub actor token belongs to one session
    * rather than to an identity. Signing out deletes that row; a second sign-in
@@ -77,10 +81,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isNullableString(value: unknown): value is string | null {
-  return value === null || typeof value === 'string';
-}
-
 function unexpired(exp: unknown): boolean {
   return typeof exp === 'number' && exp > Math.floor(Date.now() / 1000);
 }
@@ -100,8 +100,6 @@ function isSessionClaims(value: unknown): value is SessionClaims {
     value.subject.length > 0 &&
     typeof value.sid === 'string' &&
     value.sid.length > 0 &&
-    isNullableString(value.login) &&
-    isNullableString(value.email) &&
     typeof value.iat === 'number' &&
     typeof value.exp === 'number'
   );

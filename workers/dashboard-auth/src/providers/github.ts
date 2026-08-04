@@ -31,7 +31,6 @@ type GitHubTokenResponse = {
 type GitHubUser = {
   id?: number;
   login?: string;
-  email?: string | null;
 };
 
 /**
@@ -118,7 +117,7 @@ async function postToken(
 export async function exchangeGitHubCode(
   env: Env,
   options: { code: string; redirectUri: string; codeVerifier: string },
-): Promise<{ subject: string; login: string; email: string | null; token: UserToken }> {
+): Promise<{ subject: string; login: string; token: UserToken }> {
   const token = await postToken(env, 'exchange', {
     code: options.code,
     redirect_uri: options.redirectUri,
@@ -145,7 +144,6 @@ export async function exchangeGitHubCode(
   return {
     subject: String(user.id),
     login: user.login,
-    email: user.email ?? null,
     token: userToken,
   };
 }

@@ -34,8 +34,6 @@ function withCookie(name: string, value: string): Request {
 const IDENTITY = {
   provider: 'github',
   subject: '12345',
-  login: 'someone',
-  email: null,
 } as const;
 
 test('a login transaction token is not a session', async () => {
@@ -60,8 +58,37 @@ test('a real session still round-trips', async () => {
 
   assert.equal(claims?.provider, 'github');
   assert.equal(claims?.subject, '12345');
-  assert.equal(claims?.login, 'someone');
-  assert.equal(claims?.email, null);
+});
+
+test('a session token carries no display claims', async () => {
+  const session = await issueSession(ENV, IDENTITY);
+
+  // The payload half of the token is readable base64url on purpose — signed,
+  // not encrypted — which is exactly why nothing showable may live in it.
+  const payload = JSON.parse(
+    Buffer.from(session.token.split('.')[0] ?? '', 'base64url').toString(),
+  ) as Record<string, unknown>;
+
+  assert.deepEqual(
+    Object.keys(payload).sort(),
+    ['exp', 'iat', 'provider', 'sid', 'subject'],
+    'opaque identifiers and clocks only',
+  );
+});
+
+test('a legacy cookie still carrying display claims reads as a session', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const legacy = await signClaims(ENV.SESSION_SECRET, 'session', {
+    ...IDENTITY,
+    login: 'someone',
+    email: 'someone@example.invalid',
+    sid: 'legacy-sid',
+    iat: now,
+    exp: now + 60,
+  });
+
+  const claims = await readSession(ENV, withCookie(SESSION_COOKIE, legacy));
+  assert.equal(claims?.subject, '12345', 'extra claims are ignored, not fatal');
 });
 
 test('a real login transaction still round-trips', async () => {

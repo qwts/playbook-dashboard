@@ -20,7 +20,6 @@ type GoogleIdTokenClaims = {
   aud?: string;
   sub?: string;
   exp?: number;
-  email?: string;
 };
 
 type GoogleTokenResponse = {
@@ -37,8 +36,9 @@ export function buildGoogleAuthorizeUrl(
   url.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
   url.searchParams.set('redirect_uri', options.redirectUri);
   url.searchParams.set('response_type', 'code');
-  // `openid email` is the smallest scope that yields a stable subject.
-  url.searchParams.set('scope', 'openid email');
+  // `openid` alone yields the stable subject, and the subject is all the
+  // Worker keeps — requesting the email scope would collect data it discards.
+  url.searchParams.set('scope', 'openid');
   url.searchParams.set('state', options.state);
   url.searchParams.set('code_challenge', options.codeChallenge);
   url.searchParams.set('code_challenge_method', 'S256');
@@ -49,7 +49,7 @@ export function buildGoogleAuthorizeUrl(
 export async function exchangeGoogleCode(
   env: Env,
   options: { code: string; redirectUri: string; codeVerifier: string },
-): Promise<{ subject: string; email: string | null }> {
+): Promise<{ subject: string }> {
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: {
@@ -88,5 +88,5 @@ export async function exchangeGoogleCode(
     throw new Error('google id_token expired');
   }
 
-  return { subject: claims.sub, email: claims.email ?? null };
+  return { subject: claims.sub };
 }

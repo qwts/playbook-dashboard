@@ -121,7 +121,7 @@ function FloorBits({ repo }: { repo: RepoSnapshot }) {
 function AccountRow({ session, onSignOut }: DashboardProps) {
   if (!session) return null;
 
-  const who = session.login ?? session.email ?? 'signed in';
+  const who = session.login ?? 'signed in';
 
   return (
     <div className="account">

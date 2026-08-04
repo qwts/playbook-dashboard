@@ -445,6 +445,13 @@ tr:last-child td {
   font-size: 0.9rem;
 }
 
+.signin-disclosure {
+  margin: 0.5rem 0 0;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .auth-button {
     transition: none;

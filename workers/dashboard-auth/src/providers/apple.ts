@@ -22,7 +22,6 @@ type AppleIdTokenClaims = {
   aud?: string;
   sub?: string;
   exp?: number;
-  email?: string;
 };
 
 type AppleTokenResponse = {
@@ -64,7 +63,7 @@ async function createClientSecret(env: Env): Promise<string> {
 export async function exchangeAppleCode(
   env: Env,
   options: { code: string; redirectUri: string; codeVerifier: string },
-): Promise<{ subject: string; email: string | null }> {
+): Promise<{ subject: string }> {
   const body = new URLSearchParams({
     client_id: env.APPLE_CLIENT_ID,
     client_secret: await createClientSecret(env),
@@ -102,5 +101,5 @@ export async function exchangeAppleCode(
     throw new Error('apple id_token expired');
   }
 
-  return { subject: claims.sub, email: claims.email ?? null };
+  return { subject: claims.sub };
 }
