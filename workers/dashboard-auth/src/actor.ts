@@ -105,12 +105,7 @@ export async function loadActorToken(
     return { status: 'unavailable', error: 'actor_token_unavailable' };
   }
 
-  const identity: Identity = {
-    provider: session.provider,
-    subject: session.subject,
-    login: session.login,
-    email: session.email,
-  };
+  const identity: Identity = { provider: session.provider, subject: session.subject };
 
   try {
     await storeActorToken(env, session.sid, identity, refreshed, now);

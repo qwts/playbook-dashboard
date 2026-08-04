@@ -498,6 +498,16 @@ dashboard, so a failed sign-in record is logged and ignored. The same failure
 on the audit path stops the action. Two stores, two postures, and the
 difference is whether anything irreversible depends on the write.
 
+**A sign-in record is a subject, not a person.** `identities` keeps the
+provider, its stable subject, two timestamps, and a counter — no login, no
+email. The subject arrives through the OAuth code exchange, cannot be forged
+by the client, and identifies the account *to the provider*, who already holds
+login, email, and cross-service history at higher fidelity than this Worker
+could record. Anything beyond it would be a low-quality copy of evidence
+someone else keeps better — and, for a table nothing reads back, pure leak
+surface. The audit log is the deliberate exception: stored-because-it-acted
+keeps the `login`, stored-because-it-existed does not.
+
 **Nothing privileged is publishable.** The panel shows pull request titles and
 authors — both on the forbidden list the snapshot is validated against. That is
 the reason they are served live, per session, `private, no-store`, from a route

@@ -47,12 +47,7 @@ function nowSeconds(): number {
 }
 
 function identityOf(session: SessionClaims): Identity {
-  return {
-    provider: session.provider,
-    subject: session.subject,
-    login: session.login,
-    email: session.email,
-  };
+  return { provider: session.provider, subject: session.subject };
 }
 
 /**
@@ -240,6 +235,7 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
       {
         id: parsed.idempotencyKey,
         identity: actor.identity,
+        login: actor.session.login,
         action: 'pull_request_review',
         repo: parsed.repo.fullName,
         target: String(parsed.number),

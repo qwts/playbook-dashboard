@@ -124,6 +124,14 @@ Three tables: `identities` (sign-in tracking, best effort), `actor_tokens`
 (append-only, written before the action). Without the binding, `/admin/*`
 returns `503 privileges_unavailable` and sign-in is unaffected.
 
+`identities` stores only the provider, the provider's stable subject, first and
+last seen timestamps, and a sign-in counter — no logins, no emails. The subject
+is provider-attested and identifies the account *to the provider* if an
+incident ever requires it; everything richer would be a copy of evidence the
+provider already holds better. The `audit_log` is different on purpose: its
+rows record what an account *did*, so they keep the `login` and must stay
+readable on their own.
+
 Reading the audit log:
 
 ```bash

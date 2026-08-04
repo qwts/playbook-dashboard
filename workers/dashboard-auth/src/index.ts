@@ -234,7 +234,7 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
     email: identity.email,
   });
 
-  const record = { provider: tx.provider, ...identity };
+  const record = { provider: tx.provider, subject: identity.subject };
   const now = Math.floor(Date.now() / 1000);
 
   // Best effort, deliberately. Sign-in tracking is a convenience, and a
