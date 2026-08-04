@@ -35,7 +35,14 @@ import {
 import type { SessionClaims } from './session.ts';
 import { readSession } from './session.ts';
 import type { Identity } from './store.ts';
-import { beginAudit, completeAudit, countRecentActions, reapExpiredActorTokens } from './store.ts';
+import type { AuditRecord } from './store.ts';
+import {
+  beginAudit,
+  completeAudit,
+  countRecentActions,
+  findAudit,
+  reapExpiredActorTokens,
+} from './store.ts';
 
 /** Attempts per identity per minute, counted from the audit log itself. */
 const RATE_WINDOW_SECONDS = 60;
@@ -189,6 +196,32 @@ function readReviewRequest(env: Env, body: ReviewBody | null): ReviewRequest | s
   };
 }
 
+/**
+ * What a key that already acted gets back — wherever the collision surfaces.
+ *
+ * A key reused against a *different* pull request is not a replay. Reporting
+ * the first attempt's outcome would say "already approved" about something
+ * this request never touched.
+ */
+function replayResponse(attempt: AuditRecord, parsed: ReviewRequest): Response {
+  const sameTarget =
+    attempt.repo === parsed.repo.fullName &&
+    attempt.target === String(parsed.number) &&
+    attempt.verb === parsed.event;
+
+  if (!sameTarget) {
+    return privateJson({ error: 'idempotency_key_reused' }, { status: 409 });
+  }
+
+  return privateJson({
+    ok: attempt.outcome === 'succeeded',
+    replay: true,
+    outcome: attempt.outcome,
+    repo: parsed.repo.fullName,
+    number: parsed.number,
+  });
+}
+
 async function handleReview(env: Env, actor: Actor, request: Request): Promise<Response> {
   const db = env.DB;
   if (!db) return privateJson({ error: 'privileges_unavailable' }, { status: 503 });
@@ -203,11 +236,23 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
 
   const now = nowSeconds();
 
-  // Advisory pre-check, and a health probe in one: it refuses the common case
-  // before any GitHub call is spent, and if the count cannot be taken the
-  // audit row could not be written either. It is not the enforcement — every
-  // await between here and the insert is a window overlapping requests could
-  // race through, so the binding check is inside beginAudit's own statement.
+  // A replay is answered before any rate math or GitHub call: it is a
+  // question about the past, and its answer must come back even while the
+  // window is closed. The original attempt sits in the recent count, so
+  // checking the rate first would 429 exactly the retry — a lost response to
+  // the request that reached the limit — that the idempotency key exists for.
+  let previous;
+  try {
+    previous = await findAudit(db, parsed.idempotencyKey);
+  } catch {
+    return privateJson({ error: 'audit_unavailable' }, { status: 503 });
+  }
+  if (previous) return replayResponse(previous, parsed);
+
+  // Advisory pre-check: it refuses the common case before any GitHub call is
+  // spent. It is not the enforcement — every await between here and the
+  // insert is a window overlapping requests could race through, so the
+  // binding check is inside beginAudit's own statement.
   let recent: number;
   try {
     recent = await countRecentActions(db, actor.identity, now - RATE_WINDOW_SECONDS);
@@ -266,27 +311,10 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
     return privateJson({ error: 'rate_limited' }, { status: 429 });
   }
 
-  if (attempt.status === 'replay') {
-    // A key reused against a different pull request is not a replay. Reporting
-    // the first attempt's outcome would say "already approved" about something
-    // this request never touched.
-    const sameTarget =
-      attempt.repo === parsed.repo.fullName &&
-      attempt.target === String(parsed.number) &&
-      attempt.verb === parsed.event;
-
-    if (!sameTarget) {
-      return privateJson({ error: 'idempotency_key_reused' }, { status: 409 });
-    }
-
-    return privateJson({
-      ok: attempt.outcome === 'succeeded',
-      replay: true,
-      outcome: attempt.outcome,
-      repo: parsed.repo.fullName,
-      number: parsed.number,
-    });
-  }
+  // The early lookup answers replays, so reaching here is the race where two
+  // requests carried the same key concurrently and the other one inserted
+  // first — same answer, discovered later.
+  if (attempt.status === 'replay') return replayResponse(attempt, parsed);
 
   try {
     await submitReview(token.accessToken, parsed.repo, parsed.number, {

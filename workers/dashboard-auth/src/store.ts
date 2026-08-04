@@ -225,22 +225,27 @@ export async function beginAudit(
 
   if ((insert.meta.changes ?? 0) > 0) return { status: 'recorded' };
 
-  const existing = await db
-    .prepare('SELECT outcome, repo, target, verb FROM audit_log WHERE id = ?')
-    .bind(attempt.id)
-    .first<{ outcome: string; repo: string; target: string; verb: string }>();
+  const existing = await findAudit(db, attempt.id);
 
   // Nothing was written and no row holds this key: the guard refused, not
   // the primary key.
   if (!existing) return { status: 'rate_limited' };
 
-  return {
-    status: 'replay',
-    outcome: existing.outcome,
-    repo: existing.repo,
-    target: existing.target,
-    verb: existing.verb,
-  };
+  return { status: 'replay', ...existing };
+}
+
+export type AuditRecord = { outcome: string; repo: string; target: string; verb: string };
+
+/**
+ * What an idempotency key already did, if anything. A replay is a question
+ * about the past, so the caller can answer it from here without spending a
+ * rate-limit slot or a GitHub call.
+ */
+export async function findAudit(db: Database, id: string): Promise<AuditRecord | null> {
+  return db
+    .prepare('SELECT outcome, repo, target, verb FROM audit_log WHERE id = ?')
+    .bind(id)
+    .first<AuditRecord>();
 }
 
 /** Only ever closes an open attempt, so a replay cannot rewrite history. */
