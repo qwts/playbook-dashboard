@@ -11,14 +11,14 @@ workers_dev = false
 pattern = "dashboard.qwts.org/*"
 zone_name = "qwts.org"
 
-# Identity records, actor tokens, and the audit log. Create it once with
-# `wrangler d1 create playbook-dashboard-auth`, paste the id below, then apply
-# `schema.sql`. Leaving the placeholder fails the deploy, which is the intended
-# outcome: without this binding there are no privileged actions at all.
+# Identity records, actor tokens, and the audit log. Created 2026-08-04 with
+# `wrangler d1 create playbook-dashboard-auth`; `schema.sql` must be applied
+# with `wrangler d1 execute playbook-dashboard-auth --remote --file=schema.sql`.
+# The id is a resource name, not a secret — access rides on the account.
 [[d1_databases]]
 binding = "DB"
 database_name = "playbook-dashboard-auth"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "97eaffdf-c3a0-4c03-8cda-dea857d423d0"
 
 [vars]
 # Empty = pass through to the zone origin (correct for CF-proxied GitHub Pages).
