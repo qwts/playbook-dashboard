@@ -33,7 +33,19 @@ type FakeDb = {
   tokens: Map<string, { secret: string; access: number | null; refresh: number | null }>;
 };
 
-function fakeDb(options: { failAuditInsert?: boolean; recentAttempts?: number } = {}): FakeDb {
+function fakeDb(
+  options: {
+    failAuditInsert?: boolean;
+    recentAttempts?: number;
+    /**
+     * What the reservation's own count sees, when it differs from
+     * `recentAttempts`: the advisory pre-check and the atomic insert read the
+     * log at different moments, and the gap between them is the race the
+     * reservation exists to close.
+     */
+    attemptsAtInsert?: number;
+  } = {},
+): FakeDb {
   const audit = new Map<string, AuditRow>();
   const tokens = new Map<string, { secret: string; access: number | null; refresh: number | null }>();
 
@@ -79,6 +91,12 @@ function fakeDb(options: { failAuditInsert?: boolean; recentAttempts?: number } 
             if (options.failAuditInsert) throw new Error('D1_ERROR: database unavailable');
             const id = String(args[0]);
             if (audit.has(id)) return { meta: { changes: 0 } };
+            // The guard inside the statement, honored the way SQLite would:
+            // no headroom, no row.
+            const limit = Number(args[13]);
+            if ((options.attemptsAtInsert ?? options.recentAttempts ?? 0) >= limit) {
+              return { meta: { changes: 0 } };
+            }
             audit.set(id, {
               outcome: 'attempted',
               login: args[4] === null ? null : String(args[4]),
@@ -454,6 +472,33 @@ test('the rate limit is counted from the audit log, before any GitHub call', asy
     assert.equal(response.status, 429);
     assert.equal((await response.json()).error, 'rate_limited');
     assert.equal(stub.calls.length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a burst that outruns the advisory check is refused by the reservation itself', async () => {
+  // The advisory count sees headroom; by the time the insert runs, parallel
+  // requests have used it up. The reservation is the enforcement: no audit
+  // row, no review submitted.
+  const fake = fakeDb({ recentAttempts: 0, attemptsAtInsert: 10 });
+  const env = await envWith(fake);
+  const stub = stubFetch(() =>
+    githubJson({ number: 7, title: 'Fix', head: { sha: SHA }, user: { login: 'bot' } }),
+  );
+
+  try {
+    const cookie = await cookieFor(env);
+    const response = await route(env, reviewRequest(cookie, APPROVAL));
+
+    assert.equal(response.status, 429);
+    assert.equal((await response.json()).error, 'rate_limited');
+    assert.equal(
+      stub.calls.filter((call) => call.method === 'POST').length,
+      0,
+      'nothing reached GitHub past the reservation',
+    );
+    assert.equal(fake.audit.size, 0);
   } finally {
     stub.restore();
   }

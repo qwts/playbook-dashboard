@@ -10,7 +10,7 @@
  * in the reassuring direction.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from './lib/auth';
 import {
   describeReviewError,
@@ -97,12 +97,23 @@ export function Review({ session, onReauthRequired }: ReviewProps) {
     };
   }, [session.privileged]);
 
+  // Same discipline as the snapshot loader in Dashboard: only the most
+  // recently started request may write state. Without it, switching
+  // repositories mid-flight lets the older response land second — and the
+  // selector then names repository B above repository A's pull requests,
+  // which is exactly the mix-up an armed action must never be built from.
+  const pullsRequest = useRef(0);
+
   const loadPulls = useCallback(async (fullName: string) => {
+    const seq = ++pullsRequest.current;
     setPulls(null);
     setError(null);
     try {
-      setPulls(await fetchOpenPulls(fullName));
+      const found = await fetchOpenPulls(fullName);
+      if (seq !== pullsRequest.current) return;
+      setPulls(found);
     } catch (caught) {
+      if (seq !== pullsRequest.current) return;
       setPulls([]);
       setError(caught instanceof PrivilegedError ? caught.message : describeReviewError(null));
     }
@@ -160,7 +171,7 @@ export function Review({ session, onReauthRequired }: ReviewProps) {
     setNotice({
       tone: 'ok',
       message: outcome.replay
-        ? `#${armed.pull.number} was already ${REVIEW_LABELS[armed.event].toLowerCase()}d — nothing was submitted twice.`
+        ? `${REVIEW_LABELS[armed.event]} was already submitted on #${armed.pull.number} — nothing was submitted twice.`
         : `${REVIEW_LABELS[armed.event]} submitted on #${armed.pull.number} at ${shortSha(armed.pull.headSha)}, as ${session.login ?? 'you'}.`,
     });
     void loadPulls(selected);
