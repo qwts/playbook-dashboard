@@ -296,13 +296,14 @@ async function handleMe(env: Env, request: Request): Promise<Response> {
   // only place a login exists server-side — which means only a privileged
   // admin has one to show. Everyone else renders as simply signed in.
   let login: string | null = null;
-  if (admin && session.provider === 'github' && env.DB) {
+  if (admin && session.provider === 'github' && env.DB && env.TOKEN_ENCRYPTION_KEY) {
     const row = await getActorToken(env.DB, session.sid).catch(() => null);
-    privileged = row !== null;
-    if (row && env.TOKEN_ENCRYPTION_KEY) {
-      const bundle = await open<SealedActorToken>(env.TOKEN_ENCRYPTION_KEY, row.secret);
-      login = bundle?.login ?? null;
-    }
+    // A row that does not decrypt is not a privilege: a rotated key or
+    // tampered ciphertext means no action would reach GitHub, and saying
+    // `privileged` here would render a panel whose every click fails.
+    const bundle = row ? await open<SealedActorToken>(env.TOKEN_ENCRYPTION_KEY, row.secret) : null;
+    privileged = Boolean(bundle?.accessToken);
+    login = bundle?.login ?? null;
   }
 
   return json(

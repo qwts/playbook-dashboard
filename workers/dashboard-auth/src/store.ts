@@ -102,6 +102,23 @@ export async function deleteActorToken(db: Database, sid: string): Promise<void>
 }
 
 /**
+ * Deletes the row only if it still holds the ciphertext the caller read.
+ *
+ * GitHub rotates the refresh token on use, so two overlapping requests can
+ * race a refresh: the loser's failure must not destroy the winner's freshly
+ * stored pair. Comparing the sealed secret is the compare-and-swap — if the
+ * row changed since this request read it, someone else won, and their
+ * credential stays.
+ */
+export async function deleteActorTokenIfUnchanged(
+  db: Database,
+  sid: string,
+  secret: string,
+): Promise<void> {
+  await db.prepare('DELETE FROM actor_tokens WHERE sid = ? AND secret = ?').bind(sid, secret).run();
+}
+
+/**
  * Reaps rows whose refresh token has expired — nothing can ever use them
  * again, so holding them is pure liability. A NULL refresh expiry is left
  * alone: it means the App has token expiry turned off and the token still
@@ -152,6 +169,8 @@ export type AuditAttempt = {
 
 export type AuditBegin =
   | { status: 'recorded' }
+  /** The reservation found no headroom — the action must not proceed. */
+  | { status: 'rate_limited' }
   /**
    * This key already acted. The first attempt's outcome comes back with what
    * it was aimed at, because a key reused against a *different* pull request
@@ -165,17 +184,25 @@ export type AuditBegin =
  *
  * The alternative — record what happened after it happened — cannot record the
  * case that matters most, which is a call that left here and never came back.
+ *
+ * The rate limit is enforced *inside* the insert: the count and the write are
+ * one statement, executed atomically, so overlapping requests cannot each
+ * observe headroom and all proceed. A count taken separately is advisory only
+ * — every await between it and the insert is a window to race through.
  */
 export async function beginAudit(
   db: Database,
   attempt: AuditAttempt,
   now: number,
+  rate: { since: number; limit: number },
 ): Promise<AuditBegin> {
   const insert = await db
     .prepare(
       `INSERT INTO audit_log
          (id, started_at, provider, subject, login, action, repo, target, head_sha, verb, outcome)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'attempted')
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'attempted'
+        WHERE (SELECT COUNT(*) FROM audit_log
+                WHERE provider = ? AND subject = ? AND started_at >= ?) < ?
        ON CONFLICT(id) DO NOTHING`,
     )
     .bind(
@@ -189,6 +216,10 @@ export async function beginAudit(
       attempt.target,
       attempt.headSha,
       attempt.verb,
+      attempt.identity.provider,
+      attempt.identity.subject,
+      rate.since,
+      rate.limit,
     )
     .run();
 
@@ -199,12 +230,16 @@ export async function beginAudit(
     .bind(attempt.id)
     .first<{ outcome: string; repo: string; target: string; verb: string }>();
 
+  // Nothing was written and no row holds this key: the guard refused, not
+  // the primary key.
+  if (!existing) return { status: 'rate_limited' };
+
   return {
     status: 'replay',
-    outcome: existing?.outcome ?? 'unknown',
-    repo: existing?.repo ?? '',
-    target: existing?.target ?? '',
-    verb: existing?.verb ?? '',
+    outcome: existing.outcome,
+    repo: existing.repo,
+    target: existing.target,
+    verb: existing.verb,
   };
 }
 

@@ -203,9 +203,11 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
 
   const now = nowSeconds();
 
-  // Read the audit log before writing to it: if the count cannot be taken, the
-  // row that follows could not have been written either, and acting without
-  // one is the thing this design does not do.
+  // Advisory pre-check, and a health probe in one: it refuses the common case
+  // before any GitHub call is spent, and if the count cannot be taken the
+  // audit row could not be written either. It is not the enforcement — every
+  // await between here and the insert is a window overlapping requests could
+  // race through, so the binding check is inside beginAudit's own statement.
   let recent: number;
   try {
     recent = await countRecentActions(db, actor.identity, now - RATE_WINDOW_SECONDS);
@@ -250,6 +252,7 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
         verb: parsed.event,
       },
       now,
+      { since: now - RATE_WINDOW_SECONDS, limit: privilegedRateLimit(env) },
     );
   } catch (error) {
     console.error(
@@ -257,6 +260,10 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
       error instanceof Error ? error.message : 'unknown error',
     );
     return privateJson({ error: 'audit_unavailable' }, { status: 503 });
+  }
+
+  if (attempt.status === 'rate_limited') {
+    return privateJson({ error: 'rate_limited' }, { status: 429 });
   }
 
   if (attempt.status === 'replay') {

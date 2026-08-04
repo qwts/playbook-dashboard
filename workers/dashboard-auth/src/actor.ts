@@ -14,6 +14,7 @@ import { refreshGitHubToken } from './providers/github.ts';
 import type { SessionClaims } from './session.ts';
 import {
   deleteActorToken,
+  deleteActorTokenIfUnchanged,
   deleteSupersededActorTokens,
   getActorToken,
   putActorToken,
@@ -132,7 +133,12 @@ export async function loadActorToken(
       'github token refresh failed:',
       error instanceof Error ? error.message : 'unknown error',
     );
-    await forgetActorToken(env, session.sid);
+    // Two overlapping requests can race this refresh, and the rotation means
+    // exactly one wins. If the row no longer holds the pair this request
+    // started from, the other request already stored its replacement — this
+    // failure is about a spent token, and deleting unconditionally would
+    // destroy the winner's live credential and force a needless re-auth.
+    await forgetActorTokenIfUnchanged(env, session.sid, row.secret);
     return { status: 'unavailable', error: 'actor_token_unavailable' };
   }
 
@@ -144,10 +150,16 @@ export async function loadActorToken(
   } catch {
     // The new pair could not be persisted, so the old one is already dead and
     // this one is unreachable next request. Fail now rather than act on a
-    // credential nothing recorded.
-    await forgetActorToken(env, session.sid);
+    // credential nothing recorded — but only delete the row this request
+    // read; a concurrent refresh may have stored a pair that works.
+    await forgetActorTokenIfUnchanged(env, session.sid, row.secret);
     return { status: 'unavailable', error: 'actor_token_unavailable' };
   }
 
   return { status: 'ready', accessToken: refreshed.accessToken, login };
+}
+
+async function forgetActorTokenIfUnchanged(env: Env, sid: string, secret: string): Promise<void> {
+  if (!env.DB) return;
+  await deleteActorTokenIfUnchanged(env.DB, sid, secret).catch(() => undefined);
 }
