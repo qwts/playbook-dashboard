@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 
@@ -244,6 +245,60 @@ test('every referenced font file is actually vendored', () => {
   for (const file of referenced) {
     assert.ok(present.has(file), `${file} is referenced but missing from public/fonts/`);
   }
+});
+
+/**
+ * A vendored binary is the one thing in this repository review cannot read,
+ * which is why DESIGN.md records a SHA-256 per file — but a digest in a
+ * markdown table is a comment, not a check, until something reads it back.
+ * Scoped to the Pi files: those are the ones a re-subset would silently
+ * corrupt, since `unicode-range` coverage (asserted above) says nothing about
+ * what glyphs are actually inside the file it names — a subsetting tool could
+ * regenerate a file that keeps the same name and range but drops U+2265 from
+ * the outline data itself.
+ */
+const DESIGN = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
+
+function recordedDigests(markdown) {
+  const table = new Map();
+  for (const [, file, sha256] of markdown.matchAll(
+    /\|\s*`([\w.-]+\.woff2)`\s*\|\s*[\d,]+\s*\|\s*`([0-9a-f]{64})`\s*\|/giu,
+  )) {
+    table.set(file, sha256.toLowerCase());
+  }
+  return table;
+}
+
+test('DESIGN.md records a digest for every Pi font actually vendored', () => {
+  const recorded = recordedDigests(DESIGN);
+  const piFiles = readdirSync(new URL('../public/fonts/', import.meta.url)).filter((file) =>
+    file.endsWith('-Pi.woff2'),
+  );
+  assert.ok(piFiles.length >= 7, `expected the vendored Pi faces, found ${piFiles.length}`);
+
+  for (const file of piFiles) {
+    assert.ok(recorded.has(file), `${file} is vendored but DESIGN.md records no digest for it`);
+  }
+});
+
+test('every vendored Pi font matches the digest DESIGN.md records for it', () => {
+  const recorded = recordedDigests(DESIGN);
+  const checked = [];
+
+  for (const [file, expected] of recorded) {
+    if (!file.endsWith('-Pi.woff2')) continue;
+    checked.push(file);
+    const bytes = readFileSync(new URL(`../public/fonts/${file}`, import.meta.url));
+    const actual = createHash('sha256').update(bytes).digest('hex');
+    assert.equal(
+      actual,
+      expected,
+      `${file} on disk does not match the digest DESIGN.md records for it — ` +
+        'a silent re-subset could drop U+2265 (≥) from openSecurityLabel',
+    );
+  }
+
+  assert.ok(checked.length >= 7, `expected to check the vendored Pi faces, checked ${checked.length}`);
 });
 
 // U+2265 is in the Pi subset, not Latin1, and `openSecurityLabel` renders "≥6"
