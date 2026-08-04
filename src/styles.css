@@ -10,6 +10,25 @@
   --warn: #c4923a;
   --danger: #c45c4a;
   --ok: #4ea37a;
+  /* Status scale, ported from the design system's tokens/colors.css so the
+     product and the DS share one vocabulary. "unknown" is withheld-or-
+     unreadable, and it is deliberately NOT red: a value nobody could read is
+     not a failure of the fleet, it is a gap in the snapshot. */
+  --status-ok: var(--ok);
+  --status-ok-line: rgba(78, 163, 122, 0.45);
+  --status-ok-bg: rgba(78, 163, 122, 0.1);
+  --status-warn: var(--warn);
+  --status-warn-line: rgba(196, 146, 58, 0.45);
+  --status-warn-bg: rgba(196, 146, 58, 0.1);
+  --status-danger: var(--danger);
+  /* #c45c4a is 4.41:1 on --bg-0 — just under AA for small text. Use this
+     lightened pair for danger text below 18px. */
+  --status-danger-text: #d4705e;
+  --status-danger-line: rgba(196, 92, 74, 0.45);
+  --status-danger-bg: rgba(196, 92, 74, 0.1);
+  --status-unknown: var(--ink-muted);
+  --status-unknown-line: var(--line);
+  --status-unknown-bg: var(--bg-0);
   --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   color: var(--ink);
@@ -274,6 +293,124 @@ tr:last-child td {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+}
+
+/* Pillar chips — workflow CONTENT, distinct from floor bits (repo SETTINGS).
+   Same badge bones, different family: tone rides a 2px left edge, the device
+   .review-notice already uses, so a reader can tell which kind of red they
+   are looking at — a settings toggle or a pull request. */
+.badge[data-family="pillar"] {
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-left-width: 2px;
+  padding-left: 0.45rem;
+}
+
+.badge[data-family="pillar"][data-tone="ok"] {
+  border-left-color: var(--ok);
+}
+
+.badge[data-family="pillar"][data-tone="warn"] {
+  border-left-color: var(--warn);
+}
+
+.badge[data-family="pillar"][data-tone="danger"] {
+  border-left-color: var(--danger);
+}
+
+.badge[data-family="pillar"][data-tone="muted"] {
+  border-left-color: var(--line);
+}
+
+.badge[data-family="pillar"] .v {
+  color: var(--ink-muted);
+}
+
+.badge[data-family="pillar"][data-tone="ok"] .v {
+  color: var(--ok);
+}
+
+.badge[data-family="pillar"][data-tone="warn"] .v {
+  color: var(--warn);
+}
+
+/* Small text: the lightened danger pair, not --danger — 4.41:1 fails AA here. */
+.badge[data-family="pillar"][data-tone="danger"] .v {
+  color: var(--status-danger-text);
+}
+
+/* Absent (none): dashed, recedes — an owner not running workflows is not a gap. */
+.badge[data-family="pillar"][data-state="absent"] {
+  border-style: dashed;
+  color: var(--ink-muted);
+}
+
+/* Unknown (null): solid, full ink, weight 500 — heavier than any other muted
+   thing, because "could not read" must never blend into "nothing there". */
+.badge[data-family="pillar"][data-state="unknown"] {
+  color: var(--ink);
+  border-left-color: var(--ink-muted);
+}
+
+.badge[data-family="pillar"][data-state="unknown"] .v {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.pillar-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 20rem;
+}
+
+.findings {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 21rem;
+}
+
+.findings li {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.findings .p {
+  font-family: var(--font-mono);
+  font-size: 0.69rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.findings .t {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.findings .t[data-tone="muted"] {
+  color: var(--ink-muted);
+}
+
+/* Visually hidden, announced: glyph-only verdicts carry their word here, so
+   "?" and "—" — the two states the design works hardest to separate — do not
+   collapse in audio. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .count-stack {

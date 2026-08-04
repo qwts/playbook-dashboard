@@ -12,10 +12,12 @@ import {
   governedCount,
   isSnapshotStale,
   openSecurityLabel,
+  pillarCoverage,
   sumOpenSecurity,
   toneForCount,
   toneForFloorCoverage,
   toneForOpenSecurity,
+  toneForPillarCoverage,
   visibleRepos,
   unreadableCount,
   withheldCount,
@@ -23,8 +25,8 @@ import {
 import type { Tone } from './lib/aggregate';
 import { PROVIDER_LABELS, type Session } from './lib/auth';
 import { Review } from './Review';
-import { validateSnapshot } from './lib/snapshot-schema.ts';
-import type { RepoSnapshot, Snapshot } from './types/snapshot';
+import { PILLARS, validateSnapshot } from './lib/snapshot-schema.ts';
+import type { PillarResult, RepoSnapshot, Snapshot } from './types/snapshot';
 
 type LoadState =
   | { status: 'loading' }
@@ -56,6 +58,153 @@ function RepoLink({ repo }: { repo: RepoSnapshot }) {
     <a className="repo-link" href={repo.htmlUrl} rel="noreferrer">
       {repo.name}
     </a>
+  );
+}
+
+/**
+ * A glyph-only verdict with its word for the screen reader. `?` announces as
+ * "question mark" or is skipped and `—` is usually silent — without the word,
+ * unknown and absent collapse in audio, the two states the design works
+ * hardest to keep apart.
+ */
+function Glyph({ glyph, word }: { glyph: string; word: string }) {
+  return (
+    <>
+      <span aria-hidden="true">{glyph}</span>
+      <span className="sr-only">{word}</span>
+    </>
+  );
+}
+
+/**
+ * UI-owned literals keyed by reason code — nothing from the snapshot is ever
+ * rendered as text. Class of problem, never an instance: no file, job, step,
+ * line, action name, or count. Each literal names the standing grant, not the
+ * detector. Copy owned by Design (handoff §5); changing it here without them
+ * is scope creep.
+ */
+const PILLAR_FINDING_TEXT: Record<string, string> = {
+  'unpinned-third-party': 'Third-party actions run from a mutable tag rather than a pinned commit.',
+  'unpinned-first-party': 'First-party actions run from a mutable tag rather than a pinned commit.',
+  'write-all': 'Workflows are granted write access to everything by default.',
+  'no-permissions-block': 'Workflows declare no permissions and inherit the repository default.',
+  'privileged-trigger-checkout': 'A privileged trigger checks out untrusted code.',
+  'secrets-in-privileged-trigger': 'A privileged trigger exposes repository secrets to untrusted code.',
+  'privileged-trigger': 'A privileged trigger is present, with nothing unsafe found in it.',
+};
+
+/** Unknown is a gap in the run; absent is a decision by the owner. */
+const PILLAR_UNKNOWN_TEXT = 'Could not be read this run. Unknown, not clean.';
+const PILLAR_NONE_TEXT = 'No workflows. Nothing to assess, and nothing withheld.';
+
+/**
+ * Pillar chips: workflow content, deliberately not the floor's `key:value`
+ * grammar — a different family flag, a different fixer (a pull request, not a
+ * settings pane). Chips iterate `PILLARS`; render order never reads payload
+ * key order, so no artifact can reorder the badges. `data-reason` is a test
+ * hook, never rendered as text. Chips are not interactive and not focusable.
+ */
+function PillarBits({ repo }: { repo: RepoSnapshot }) {
+  return (
+    <div className="pillar-grid">
+      {PILLARS.map((name) => {
+        const result: PillarResult | undefined = repo.actionsPosture?.[name];
+        const status = result?.status;
+        if (status === 'pass' || status === 'warn' || status === 'fail') {
+          const tone: Tone = status === 'pass' ? 'ok' : status === 'warn' ? 'warn' : 'danger';
+          return (
+            <span
+              key={name}
+              className="badge"
+              data-family="pillar"
+              data-tone={tone}
+              data-reason={result?.reason ?? undefined}
+            >
+              {name} <span className="v">{status}</span>
+            </span>
+          );
+        }
+        const absent = status === 'none';
+        return (
+          <span
+            key={name}
+            className="badge"
+            data-family="pillar"
+            data-tone="muted"
+            data-state={absent ? 'absent' : 'unknown'}
+          >
+            {name}{' '}
+            <span className="v" aria-hidden="true">
+              {absent ? '—' : '?'}
+            </span>
+            <span className="sr-only">{absent ? 'no workflows' : 'unknown'}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * One line per non-`pass` pillar, in pillar order, never severity order — a
+ * severity-ordered list is a ranking, and pillars do not get one. Unknown
+ * pillars collapse into one line; an all-`pass` row prints a quiet dash and
+ * says nothing else (nothing congratulated).
+ */
+function PillarFindings({ repo }: { repo: RepoSnapshot }) {
+  const posture = repo.actionsPosture;
+  if (posture?.workflowCount === 0) {
+    return (
+      <ul className="findings">
+        <li>
+          <span className="p">workflows</span>
+          <span className="t" data-tone="muted">
+            {PILLAR_NONE_TEXT}
+          </span>
+        </li>
+      </ul>
+    );
+  }
+
+  const items: { key: string; label: string; text: string; muted?: boolean }[] = [];
+  let unknown = 0;
+  for (const name of PILLARS) {
+    const result = posture?.[name];
+    if (result?.status === 'warn' || result?.status === 'fail') {
+      // A validated snapshot guarantees the code is in vocabulary; a missing
+      // literal degrades to the unknown line rather than rendering the code.
+      const text = (result.reason && PILLAR_FINDING_TEXT[result.reason]) || PILLAR_UNKNOWN_TEXT;
+      items.push({ key: name, label: name, text });
+    } else if (result?.status !== 'pass') {
+      unknown += 1;
+    }
+  }
+  if (unknown > 0) {
+    items.push({
+      key: 'unknown',
+      label: `${unknown} pillar${unknown === 1 ? '' : 's'}`,
+      text: PILLAR_UNKNOWN_TEXT,
+      muted: true,
+    });
+  }
+  if (items.length === 0) {
+    return (
+      <span className="muted">
+        <Glyph glyph="—" word="none" />
+      </span>
+    );
+  }
+  return (
+    <ul className="findings">
+      {items.map((item) => (
+        <li key={item.key}>
+          <span className="p">{item.label}</span>
+          <span className="t" data-tone={item.muted ? 'muted' : undefined}>
+            {item.text}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -105,7 +254,9 @@ function FloorBits({ repo }: { repo: RepoSnapshot }) {
     <div className="floor-grid">
       {bits.map((bit) => (
         <span key={bit.key} className="badge" data-tone={bit.tone} title={bit.title}>
-          {bit.key}:{bit.label}
+          {/* A bare `?` announces as "question mark" or is skipped; the word
+              rides along visually hidden so unknown survives audio. */}
+          {bit.key}:{bit.label === '?' ? <Glyph glyph="?" word="unknown" /> : bit.label}
         </span>
       ))}
     </div>
@@ -242,6 +393,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
   const floor = floorCoverage(repos);
   const withheld = withheldCount(state.snapshot);
   const unreadable = unreadableCount(state.snapshot);
+  const pillars = pillarCoverage(repos);
   // Derived from the unfiltered snapshot, not from `repos`: a row the frontend
   // backstop drops must widen the gap between published and governed, not
   // shrink both sides in step and vanish. `withheld` and `unreadable` stay
@@ -295,7 +447,11 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
         <div className="stat">
           <div className="label">Open security</div>
           <div className="value" data-tone={toneForOpenSecurity(openSecurity)}>
-            {openSecurityLabel(openSecurity)}
+            {openSecurityLabel(openSecurity) === '?' ? (
+              <Glyph glyph="?" word="unknown" />
+            ) : (
+              openSecurityLabel(openSecurity)
+            )}
             {openSecurity.unknown > 0 ? (
               <span className="muted qualifier">
                 {' '}
@@ -328,6 +484,39 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                 · {floor.unknown} unknown
               </span>
             ) : null}
+          </div>
+        </div>
+        <div className="stat">
+          <div className="label">Pillars clean</div>
+          <div
+            className="value"
+            data-tone={toneForPillarCoverage(pillars)}
+            title="Published repos where every Actions pillar is pass, out of the published repositories that run workflows. A repo with any unreadable pillar never counts as clean."
+          >
+            {!pillars.evaluated ? (
+              <>
+                <Glyph glyph="?" word="unknown" />
+                <span className="muted qualifier"> · not evaluated</span>
+              </>
+            ) : pillars.total === 0 ? (
+              <>
+                0 / 0<span className="muted qualifier"> · no workflows in the fleet</span>
+              </>
+            ) : (
+              <>
+                {pillars.clean} / {pillars.total}
+                {/* The unknown count is part of the value, never dropped when
+                    zero — a tile that shows unknowns only sometimes teaches
+                    the reader to stop looking for them. The no-workflows
+                    clause renders only when it explains a denominator gap:
+                    total + noWorkflows === published rows, by construction. */}
+                <span className="muted qualifier">
+                  {' '}
+                  · {pillars.unknown} unknown
+                  {pillars.noWorkflows > 0 ? ` · ${pillars.noWorkflows} no workflows` : ''}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </section>
@@ -368,7 +557,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                       </td>
                       <td>
                         <span className="badge" data-tone={toneForCount(repo.security.dependabotOpen)}>
-                          {repo.security.dependabotOpen ?? '—'}
+                          {repo.security.dependabotOpen ?? <Glyph glyph="—" word="unknown" />}
                         </span>
                       </td>
                       <td>
@@ -376,7 +565,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                           className="badge"
                           data-tone={toneForCount(repo.security.codeScanningOpen)}
                         >
-                          {repo.security.codeScanningOpen ?? '—'}
+                          {repo.security.codeScanningOpen ?? <Glyph glyph="—" word="unknown" />}
                         </span>
                       </td>
                       <td>
@@ -384,7 +573,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                           className="badge"
                           data-tone={toneForCount(repo.security.secretScanningOpen)}
                         >
-                          {repo.security.secretScanningOpen ?? '—'}
+                          {repo.security.secretScanningOpen ?? <Glyph glyph="—" word="unknown" />}
                         </span>
                       </td>
                       <td>
@@ -397,7 +586,11 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                               : undefined
                           }
                         >
-                          {openSecurityLabel(total)}
+                          {openSecurityLabel(total) === '?' ? (
+                            <Glyph glyph="?" word="unknown" />
+                          ) : (
+                            openSecurityLabel(total)
+                          )}
                         </span>
                       </td>
                     </tr>
@@ -443,21 +636,79 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                   <td>{repo.visibility}</td>
                   <td>{repo.sharedCi ? 'yes' : 'no'}</td>
                   <td>
-                    {repo.codexSyncEnabled === null
-                      ? '—'
-                      : repo.codexSyncEnabled
-                        ? 'managed'
-                        : 'off'}
+                    {repo.codexSyncEnabled === null ? (
+                      <Glyph glyph="—" word="not declared" />
+                    ) : repo.codexSyncEnabled ? (
+                      'managed'
+                    ) : (
+                      'off'
+                    )}
                   </td>
                   <td>
                     <FloorBits repo={repo} />
                   </td>
-                  <td className="muted">{repo.delta || '—'}</td>
+                  <td className="muted">{repo.delta || <Glyph glyph="—" word="none" />}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="section">
+        <header>
+          <h2>Actions pillars</h2>
+          <p className="lede">
+            {pillars.evaluated
+              ? `Workflow content, assessed for ${pillars.total} of the ${repos.length} published ` +
+                `repositories${
+                  pillars.noWorkflows > 0
+                    ? `; ${pillars.noWorkflows} ${pillars.noWorkflows === 1 ? 'runs' : 'run'} no workflows`
+                    : ''
+                }. Class of problem only: no workflow, job, or line is ever named. Manifest order, not ranked.`
+              : 'Workflow content. Class of problem only: no workflow, job, or line is ever named. ' +
+                'Manifest order, not ranked.'}
+          </p>
+        </header>
+        {!pillars.evaluated ? (
+          // Present-and-empty rather than absent, so the section's absence is
+          // never mistaken for a clean fleet.
+          <div className="state">Actions pillars could not be evaluated this run.</div>
+        ) : pillars.total === 0 ? (
+          <div className="state">No published repository runs workflows.</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Repo</th>
+                  <th scope="col">Pillars</th>
+                  <th scope="col">Findings</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repos.map((repo) => (
+                  <tr key={repo.name}>
+                    <td>
+                      <RepoLink repo={repo} />
+                    </td>
+                    <td>
+                      <PillarBits repo={repo} />
+                    </td>
+                    <td>
+                      <PillarFindings repo={repo} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="lede">
+          pinning — third-party actions pinned to a commit · permissions — least-privilege workflow
+          token · triggers — privileged-trigger hygiene · ? unknown · — no workflows · ? never counts
+          as clean
+        </p>
       </section>
 
       <section className="section">
@@ -481,7 +732,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                   <td>
                     <RepoLink repo={repo} />
                   </td>
-                  <td className="muted">{repo.ci.workflowName ?? '—'}</td>
+                  <td className="muted">{repo.ci.workflowName ?? <Glyph glyph="—" word="none" />}</td>
                   <td>
                     {repo.ci.htmlUrl ? (
                       <a className="repo-link" href={repo.ci.htmlUrl} rel="noreferrer">
@@ -495,7 +746,13 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                       </span>
                     )}
                   </td>
-                  <td className="muted">{formatRelative(repo.ci.updatedAt, now)}</td>
+                  <td className="muted">
+                    {formatRelative(repo.ci.updatedAt, now) === '—' ? (
+                      <Glyph glyph="—" word="none" />
+                    ) : (
+                      formatRelative(repo.ci.updatedAt, now)
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

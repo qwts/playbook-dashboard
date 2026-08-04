@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CiStatus, RepoSnapshot, SecurityCounts, Snapshot } from '../types/snapshot.ts';
+import type { ActionsPosture, CiStatus, RepoSnapshot, SecurityCounts, Snapshot } from '../types/snapshot.ts';
 import {
   boolLabel,
   ciClass,
@@ -14,9 +14,11 @@ import {
   governedCount,
   isSnapshotStale,
   openSecurityLabel,
+  pillarCoverage,
   sumOpenSecurity,
   toneForFloorCoverage,
   toneForOpenSecurity,
+  toneForPillarCoverage,
   visibleRepos,
   unreadableCount,
   withheldCount,
@@ -29,6 +31,24 @@ const NO_CI: CiStatus = {
   updatedAt: null,
   htmlUrl: null,
 };
+
+/** A posture the collector could not read at all — the fixture's shape. */
+const UNREAD_POSTURE: ActionsPosture = {
+  workflowCount: null,
+  pinning: { status: null, reason: null },
+  permissions: { status: null, reason: null },
+  triggers: { status: null, reason: null },
+};
+
+function posture(overrides: Partial<ActionsPosture> = {}): ActionsPosture {
+  return {
+    workflowCount: 3,
+    pinning: { status: 'pass', reason: null },
+    permissions: { status: 'pass', reason: null },
+    triggers: { status: 'pass', reason: null },
+    ...overrides,
+  };
+}
 
 function repo(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
   return {
@@ -50,6 +70,7 @@ function repo(overrides: Partial<RepoSnapshot> = {}): RepoSnapshot {
     },
     security: { dependabotOpen: 0, codeScanningOpen: 0, secretScanningOpen: 0 },
     ci: { ...NO_CI },
+    actionsPosture: { ...UNREAD_POSTURE },
     ...overrides,
   };
 }
@@ -463,4 +484,120 @@ test('an empty fleet renders the floor tile muted, not green', () => {
 
   assert.deepEqual(coverage, { complete: 0, unknown: 0, total: 0 });
   assert.equal(toneForFloorCoverage(coverage), 'muted');
+});
+
+// --- pillarCoverage ---------------------------------------------------------
+
+test('pillar coverage: none repos leave both numerator and denominator', () => {
+  const repos = [
+    repo({ name: 'clean', actionsPosture: posture() }),
+    repo({
+      name: 'failing',
+      actionsPosture: posture({ triggers: { status: 'fail', reason: 'privileged-trigger-checkout' } }),
+    }),
+    repo({ name: 'no-workflows', actionsPosture: posture({ workflowCount: 0 }) }),
+  ];
+
+  const coverage = pillarCoverage(repos);
+  assert.deepEqual(coverage, {
+    evaluated: true,
+    clean: 1,
+    unknown: 0,
+    total: 2,
+    noWorkflows: 1,
+  });
+});
+
+test('pillar coverage: the invariant total + noWorkflows === published rows holds', () => {
+  const repos = [
+    repo({ name: 'a', actionsPosture: posture() }),
+    repo({ name: 'b', actionsPosture: posture({ workflowCount: 0 }) }),
+    repo({ name: 'c', actionsPosture: { ...UNREAD_POSTURE } }),
+  ];
+  const coverage = pillarCoverage(repos);
+  assert.ok(coverage.evaluated);
+  assert.equal(coverage.total + coverage.noWorkflows, repos.length);
+});
+
+test('pillar coverage: a failed listing is not "no workflows" — denominator and unknown', () => {
+  const repos = [
+    repo({ name: 'read', actionsPosture: posture() }),
+    repo({ name: 'unlisted', actionsPosture: { ...UNREAD_POSTURE } }),
+  ];
+
+  const coverage = pillarCoverage(repos);
+  assert.deepEqual(coverage, {
+    evaluated: true,
+    clean: 1,
+    unknown: 1,
+    total: 2,
+    noWorkflows: 0,
+  });
+  assert.equal(toneForPillarCoverage(coverage), 'warn');
+});
+
+test('pillar coverage: a repo both failing and partially unread counts unknown — the loud direction', () => {
+  const repos = [
+    repo({
+      name: 'both',
+      actionsPosture: posture({
+        pinning: { status: 'fail', reason: 'unpinned-third-party' },
+        triggers: { status: null, reason: null },
+      }),
+    }),
+  ];
+
+  const coverage = pillarCoverage(repos);
+  assert.ok(coverage.evaluated);
+  assert.equal(coverage.unknown, 1);
+  assert.equal(coverage.clean, 0);
+});
+
+test('pillar coverage: evaluated is false only when no repo has a known workflow count', () => {
+  const nothingRead = pillarCoverage([
+    repo({ name: 'a', actionsPosture: { ...UNREAD_POSTURE } }),
+    repo({ name: 'b', actionsPosture: { ...UNREAD_POSTURE } }),
+  ]);
+  assert.deepEqual(nothingRead, { evaluated: false });
+  assert.equal(toneForPillarCoverage(nothingRead), 'muted');
+
+  const oneRead = pillarCoverage([
+    repo({ name: 'a', actionsPosture: { ...UNREAD_POSTURE } }),
+    repo({ name: 'b', actionsPosture: posture() }),
+  ]);
+  assert.ok(oneRead.evaluated, 'a single known count makes the run evaluated');
+});
+
+test('pillar coverage: green only when every assessed repo passes and nothing is unknown', () => {
+  const allClean = pillarCoverage([
+    repo({ name: 'a', actionsPosture: posture() }),
+    repo({ name: 'b', actionsPosture: posture({ workflowCount: 0 }) }),
+  ]);
+  assert.equal(toneForPillarCoverage(allClean), 'ok');
+
+  const warned = pillarCoverage([
+    repo({
+      name: 'a',
+      actionsPosture: posture({ permissions: { status: 'warn', reason: 'no-permissions-block' } }),
+    }),
+  ]);
+  assert.equal(toneForPillarCoverage(warned), 'warn');
+
+  const allNone = pillarCoverage([repo({ name: 'a', actionsPosture: posture({ workflowCount: 0 }) })]);
+  assert.equal(toneForPillarCoverage(allNone), 'muted');
+});
+
+test('pillar coverage: a corrupted status in the denominator is unknown, never clean', () => {
+  const coverage = pillarCoverage([
+    repo({
+      name: 'corrupt',
+      // `none` beside a non-zero count contradicts itself; the validator refuses
+      // it at publish time, and the aggregate refuses to count it clean at
+      // render time — the snapshot is untrusted input.
+      actionsPosture: posture({ pinning: { status: 'none', reason: null } }),
+    }),
+  ]);
+  assert.ok(coverage.evaluated);
+  assert.equal(coverage.unknown, 1);
+  assert.equal(coverage.clean, 0);
 });

@@ -1,5 +1,5 @@
 import type { RepoSnapshot, Snapshot } from '../types/snapshot';
-import { STALE_MS } from './snapshot-schema.ts';
+import { PILLARS, STALE_MS } from './snapshot-schema.ts';
 
 /**
  * Rows the page is allowed to render.
@@ -195,6 +195,77 @@ export function toneForFloorCoverage(coverage: FloorCoverage): Tone {
   if (coverage.total === 0) return 'muted';
   if (coverage.unknown > 0) return 'warn';
   return coverage.complete === coverage.total ? 'ok' : 'warn';
+}
+
+/**
+ * The `Pillars clean` tile's numbers, or the honest refusal to produce them.
+ *
+ * `evaluated: false` means no published repo has a known `workflowCount` —
+ * the run read nothing, so the denominator would be a pure guess, and a
+ * denominator that cannot be derived is not published as one. The tile
+ * renders `?` alone, not `? / N`.
+ *
+ * When evaluated, `total` excludes repos with no workflow files: a vacuous
+ * pass is not a pass claim, and an absence is not a deficit — those repos are
+ * out of both the numerator and the denominator, counted in `noWorkflows`
+ * instead. A repo whose *listing failed* is not "no workflows": it stays in
+ * `total` and counts `unknown`, because a repo that secretly has no workflows
+ * can only make the tile less green — the loud direction.
+ *
+ * Invariant the renderer relies on: `total + noWorkflows === repos.length`,
+ * by construction — `total` is defined as published-minus-`noWorkflows`,
+ * never computed independently, so the on-screen reconciliation (8 + 1 = 9)
+ * cannot fail to add up.
+ *
+ * `clean` + `unknown` do not partition `total`, deliberately: a repo that is
+ * both failing and partially unread counts `unknown` (the loud direction),
+ * and a repo failing cleanly counts in neither.
+ */
+export type PillarCoverage =
+  | { evaluated: false }
+  | { evaluated: true; clean: number; unknown: number; total: number; noWorkflows: number };
+
+export function pillarCoverage(repos: RepoSnapshot[]): PillarCoverage {
+  let anyKnownCount = false;
+  let noWorkflows = 0;
+  let clean = 0;
+  let unknown = 0;
+
+  for (const repo of repos) {
+    // The snapshot is untrusted input: anything that is not a sane count is
+    // an unknown count, and the repo stays in the denominator.
+    const count = repo.actionsPosture?.workflowCount;
+    const countKnown = typeof count === 'number' && Number.isInteger(count) && count >= 0;
+    if (countKnown) anyKnownCount = true;
+    if (countKnown && count === 0) {
+      noWorkflows += 1;
+      continue;
+    }
+
+    const statuses = PILLARS.map((pillar) => repo.actionsPosture?.[pillar]?.status);
+    if (statuses.every((status) => status === 'pass')) clean += 1;
+    // In-denominator repos: `'none'` here contradicts the count beside it, so
+    // it is corruption — unknown, never silently clean, never silently ignored.
+    if (statuses.some((status) => status !== 'pass' && status !== 'warn' && status !== 'fail')) {
+      unknown += 1;
+    }
+  }
+
+  if (!anyKnownCount) return { evaluated: false };
+  return { evaluated: true, clean, unknown, total: repos.length - noWorkflows, noWorkflows };
+}
+
+/**
+ * Green only when every assessed repo passes every pillar and nothing is
+ * unknown — the same claim discipline as `toneForFloorCoverage`, over the
+ * pillar denominator. Unevaluated and an all-`none` fleet are muted: there is
+ * nothing to be green *about*.
+ */
+export function toneForPillarCoverage(coverage: PillarCoverage): Tone {
+  if (!coverage.evaluated) return 'muted';
+  if (coverage.total === 0) return 'muted';
+  if (coverage.unknown > 0) return 'warn';
+  return coverage.clean === coverage.total ? 'ok' : 'warn';
 }
 
 /**
