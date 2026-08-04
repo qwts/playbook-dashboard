@@ -7,6 +7,7 @@ name: Auth Worker
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'workers/**'
       - '.github/workflows/worker.yml'
