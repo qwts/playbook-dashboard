@@ -85,6 +85,34 @@ export type SecurityCounts = {
  */
 export type GithubUrl = `https://github.com/${string}`;
 
+/**
+ * One Actions pillar's verdict for one repo.
+ *
+ * `'none'` is owner-chosen absence — the repo has no workflow files — and is
+ * repo-wide by construction: `workflowCount === 0` sets every pillar to it.
+ * `null` is unknown — the collector could not read or could not parse — and is
+ * never rendered green, never counted clean.
+ *
+ * `reason` is a machine code from the closed per-pillar vocabulary in
+ * `src/lib/snapshot-schema.ts`, non-null iff `status` is `'warn'`/`'fail'`.
+ * It names the class of problem, never the instance: no workflow file, job,
+ * or line ever reaches the artifact. The prose a reader sees is a UI literal
+ * keyed by the code.
+ */
+export type PillarResult = {
+  status: 'pass' | 'warn' | 'fail' | 'none' | null;
+  reason: string | null;
+};
+
+/** Statically assessed posture of the repo's own workflow files. */
+export type ActionsPosture = {
+  /** Workflow files on the default branch, or `null` when the listing failed. */
+  workflowCount: number | null;
+  pinning: PillarResult;
+  permissions: PillarResult;
+  triggers: PillarResult;
+};
+
 export type CiStatus = {
   workflowName: string | null;
   conclusion: string | null;
@@ -111,4 +139,5 @@ export type RepoSnapshot = {
   securityFloor: SecurityFloor;
   security: SecurityCounts;
   ci: CiStatus;
+  actionsPosture: ActionsPosture;
 };
