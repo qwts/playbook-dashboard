@@ -9,7 +9,7 @@
  */
 
 import { routeAdmin } from './admin.ts';
-import { forgetActorToken, storeActorToken } from './actor.ts';
+import { forgetActorToken, forgetSupersededActorTokens, storeActorToken } from './actor.ts';
 import { safeEqual, sha256Base64Url } from './crypto.ts';
 import type { Env, Provider } from './env.ts';
 import { isProvider } from './env.ts';
@@ -252,14 +252,18 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
   // The one place an actor token is kept. For everyone else it was used once,
   // above, to resolve a login — and goes out of scope here unstored.
   if (actorToken && isAdminIdentity(env, tx.provider, identity.subject)) {
-    await storeActorToken(env, session.sid, record, actorToken, now).catch((error: unknown) => {
-      // An admin whose token did not persist is an admin who can read. The
-      // privileged panel reports itself unavailable rather than half working.
-      console.error(
-        'actor token store failed:',
-        error instanceof Error ? error.message : 'unknown error',
-      );
-    });
+    await storeActorToken(env, session.sid, record, actorToken, now)
+      // Only after the fresh token is stored: superseded rows are dropped
+      // because they are unreachable, not to trade one stored token for none.
+      .then(() => forgetSupersededActorTokens(env, record, session.sid))
+      .catch((error: unknown) => {
+        // An admin whose token did not persist is an admin who can read. The
+        // privileged panel reports itself unavailable rather than half working.
+        console.error(
+          'actor token store failed:',
+          error instanceof Error ? error.message : 'unknown error',
+        );
+      });
   }
 
   const headers = new Headers(JSON_HEADERS);

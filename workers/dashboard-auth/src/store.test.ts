@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Database, PreparedStatement, SqlValue } from './d1.ts';
-import { recordSignIn } from './store.ts';
+import { deleteSupersededActorTokens, reapExpiredActorTokens, recordSignIn } from './store.ts';
 
 /**
  * The sign-in record is deliberately opaque — provider, subject, timestamps,
@@ -68,4 +68,31 @@ test('a repeat sign-in updates the row it already wrote', async () => {
   assert.match(statement.sql, /ON CONFLICT\(provider, subject\)/);
   assert.match(statement.sql, /sign_in_count \+ 1/);
   assert.match(statement.sql, /last_seen_at\s*=\s*excluded\.last_seen_at/);
+});
+
+test('the reaper deletes only rows whose refresh expiry has actually passed', async () => {
+  const { db, executed } = capturingDb();
+  const now = 1_754_000_000;
+
+  await reapExpiredActorTokens(db, now);
+
+  const [statement] = executed;
+  assert.ok(statement);
+  assert.match(
+    statement.sql,
+    /DELETE FROM actor_tokens\s+WHERE refresh_expires_at IS NOT NULL AND refresh_expires_at < \?/,
+    'a NULL expiry means the token still works, and must survive the reap',
+  );
+  assert.deepEqual(statement.args, [now]);
+});
+
+test('a fresh sign-in evicts other sessions for the same identity, never its own', async () => {
+  const { db, executed } = capturingDb();
+
+  await deleteSupersededActorTokens(db, { provider: 'github', subject: '12345' }, 'fresh-sid');
+
+  const [statement] = executed;
+  assert.ok(statement);
+  assert.match(statement.sql, /provider = \? AND subject = \? AND sid <> \?/);
+  assert.deepEqual(statement.args, ['github', '12345', 'fresh-sid']);
 });

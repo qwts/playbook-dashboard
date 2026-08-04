@@ -12,7 +12,12 @@ import type { Env } from './env.ts';
 import type { UserToken } from './providers/github.ts';
 import { refreshGitHubToken } from './providers/github.ts';
 import type { SessionClaims } from './session.ts';
-import { deleteActorToken, getActorToken, putActorToken } from './store.ts';
+import {
+  deleteActorToken,
+  deleteSupersededActorTokens,
+  getActorToken,
+  putActorToken,
+} from './store.ts';
 import type { Identity } from './store.ts';
 
 /** Refresh this long before expiry, so a slow request cannot straddle it. */
@@ -46,6 +51,21 @@ export async function storeActorToken(
 export async function forgetActorToken(env: Env, sid: string): Promise<void> {
   if (!env.DB) return;
   await deleteActorToken(env.DB, sid).catch(() => undefined);
+}
+
+/**
+ * After a fresh sign-in stores its token, drop any row an earlier session
+ * left for the same identity — that session can no longer reach it. Best
+ * effort: the fresh token is already stored, and a failed cleanup must not
+ * fail the sign-in.
+ */
+export async function forgetSupersededActorTokens(
+  env: Env,
+  identity: Identity,
+  keepSid: string,
+): Promise<void> {
+  if (!env.DB) return;
+  await deleteSupersededActorTokens(env.DB, identity, keepSid).catch(() => undefined);
 }
 
 function expired(at: number | null, now: number, skew = 0): boolean {
