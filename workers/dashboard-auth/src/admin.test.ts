@@ -20,6 +20,7 @@ const ORIGIN = 'https://dashboard.invalid';
 
 type AuditRow = {
   outcome: string;
+  login: string | null;
   repo: string;
   target: string;
   headSha: string;
@@ -80,6 +81,7 @@ function fakeDb(options: { failAuditInsert?: boolean; recentAttempts?: number } 
             if (audit.has(id)) return { meta: { changes: 0 } };
             audit.set(id, {
               outcome: 'attempted',
+              login: args[4] === null ? null : String(args[4]),
               repo: String(args[6]),
               target: String(args[7]),
               headSha: String(args[8]),
@@ -162,6 +164,8 @@ async function envWith(fake: FakeDb): Promise<Env> {
       refreshToken: 'ghr_test_token',
       accessExpiresAt: now + 3_600,
       refreshExpiresAt: now + 1_000_000,
+      // Sealed at sign-in alongside the token; the cookie carries no login.
+      login: 'chris',
     }),
     access: now + 3_600,
     refresh: now + 1_000_000,
@@ -175,8 +179,6 @@ async function cookieFor(env: Env, overrides: Record<string, unknown> = {}): Pro
   const token = await signClaims(env.SESSION_SECRET, 'session', {
     provider: 'github',
     subject: '12345',
-    login: 'chris',
-    email: null,
     sid: 'session-1',
     iat: now,
     exp: now + 28_800,
@@ -238,7 +240,7 @@ test('a signed-in reader who is not on the allowlist is refused', async () => {
   const stub = stubFetch(() => githubJson({}));
 
   try {
-    const cookie = await cookieFor(env, { subject: '999', login: 'someone-else' });
+    const cookie = await cookieFor(env, { subject: '999' });
     const response = await route(env, reviewRequest(cookie, APPROVAL));
 
     assert.equal(response.status, 403);
@@ -356,6 +358,7 @@ test('an approval binds commit_id and closes its audit row', async () => {
 
     const row = fake.audit.get(KEY);
     assert.equal(row?.outcome, 'succeeded');
+    assert.equal(row?.login, 'chris', 'the audit row is named from the sealed bundle');
     assert.equal(row?.repo, 'qwts/playbook-dashboard');
     assert.equal(row?.headSha, SHA);
     assert.equal(row?.verb, 'APPROVE');

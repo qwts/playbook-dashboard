@@ -240,7 +240,9 @@ async function handleReview(env: Env, actor: Actor, request: Request): Promise<R
       {
         id: parsed.idempotencyKey,
         identity: actor.identity,
-        login: actor.session.login,
+        // From the sealed bundle, not the cookie: the cookie carries no
+        // display claims, and this login was provider-attested at sign-in.
+        login: token.login,
         action: 'pull_request_review',
         repo: parsed.repo.fullName,
         target: String(parsed.number),

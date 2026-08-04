@@ -32,13 +32,17 @@ session.
 | --- | --- |
 | `GET /auth/login?provider=&state=&code_challenge=` | Signs a short-lived transaction cookie and redirects to Apple, Google, or GitHub |
 | `POST /auth/exchange` | Body `{ code, state, code_verifier }`; validates state + PKCE binding, exchanges the code, sets the session cookie |
-| `GET /auth/me` | `{ authenticated, provider, login, email, expiresAt, admin, privileged }` or `401` |
+| `GET /auth/me` | `{ authenticated, provider, login, expiresAt, admin, privileged }` or `401` |
 | `GET /auth/logout` | Clears the session cookie **and deletes the stored actor token** |
 
 `admin` means the allowlist permits the panel. `privileged` means an action
 would actually reach GitHub — allowlisted, signed in with GitHub, and holding a
 live token. They differ for an admin signed in with Apple or Google, and the
 SPA needs both to say something true rather than fail on click.
+
+`login` is non-null only for a privileged admin — it is read from the sealed
+actor-token bundle, which is the only place the Worker keeps a display field.
+Every other session renders as simply signed in.
 
 ### Privileged endpoints
 
@@ -62,13 +66,16 @@ submit returns the first outcome instead of acting again.
 
 - Authorization code, not implicit. Apple requests no scope, which allows
   `response_mode=query` and keeps the callback a plain `GET`. Google requests
-  `openid email` — the smallest scope that yields a stable subject.
+  `openid` — the smallest scope that yields a stable subject, which is all the
+  Worker keeps.
 - Google enforces PKCE itself; Apple and GitHub do not, so the Worker
   verifies the `code_challenge` / `code_verifier` binding for every provider
   before spending the code. The challenge travels in a signed `HttpOnly` cookie;
   the verifier stays in the browser until exchange time.
-- Cookies are signed with HMAC-SHA256, not encrypted. They carry only provider,
-  subject, login, and expiry.
+- Cookies are signed with HMAC-SHA256, not encrypted — their payload is
+  readable wherever the cookie travels. They therefore carry only opaque
+  identifiers: provider, subject, session id, and clocks. Display fields come
+  from `/auth/me`, never from the cookie.
 - The session cookie and the transaction cookie share one `SESSION_SECRET`, so
   each is signed for a purpose that is mixed into the HMAC and the reader
   validates the full claim shape. Without both, the transaction token handed to

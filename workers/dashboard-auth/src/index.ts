@@ -10,7 +10,8 @@
 
 import { routeAdmin } from './admin.ts';
 import { forgetActorToken, forgetSupersededActorTokens, storeActorToken } from './actor.ts';
-import { safeEqual, sha256Base64Url } from './crypto.ts';
+import type { SealedActorToken } from './actor.ts';
+import { open, safeEqual, sha256Base64Url } from './crypto.ts';
 import type { Env, Provider } from './env.ts';
 import { isProvider } from './env.ts';
 import { json, JSON_HEADERS } from './http.ts';
@@ -34,7 +35,6 @@ import {
 type Identity = {
   subject: string;
   login: string | null;
-  email: string | null;
 };
 
 type ExchangeBody = {
@@ -206,13 +206,13 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
   try {
     if (tx.provider === 'apple') {
       const result = await exchangeAppleCode(env, { code, redirectUri, codeVerifier });
-      identity = { subject: result.subject, login: null, email: result.email };
+      identity = { subject: result.subject, login: null };
     } else if (tx.provider === 'google') {
       const result = await exchangeGoogleCode(env, { code, redirectUri, codeVerifier });
-      identity = { subject: result.subject, login: null, email: result.email };
+      identity = { subject: result.subject, login: null };
     } else {
       const result = await exchangeGitHubCode(env, { code, redirectUri, codeVerifier });
-      identity = { subject: result.subject, login: result.login, email: result.email };
+      identity = { subject: result.subject, login: result.login };
       actorToken = result.token;
     }
   } catch (error) {
@@ -230,8 +230,6 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
   const session = await issueSession(env, {
     provider: tx.provider,
     subject: identity.subject,
-    login: identity.login,
-    email: identity.email,
   });
 
   const record = { provider: tx.provider, subject: identity.subject };
@@ -252,7 +250,7 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
   // The one place an actor token is kept. For everyone else it was used once,
   // above, to resolve a login — and goes out of scope here unstored.
   if (actorToken && isAdminIdentity(env, tx.provider, identity.subject)) {
-    await storeActorToken(env, session.sid, record, actorToken, now)
+    await storeActorToken(env, session.sid, record, actorToken, identity.login, now)
       // Only after the fresh token is stored: superseded rows are dropped
       // because they are unreachable, not to trade one stored token for none.
       .then(() => forgetSupersededActorTokens(env, record, session.sid))
@@ -273,15 +271,10 @@ async function handleExchange(env: Env, request: Request, url: URL): Promise<Res
     serializeCookie(SESSION_COOKIE, session.token, { maxAge: session.maxAge, secure }),
   );
 
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      provider: tx.provider,
-      login: identity.login,
-      email: identity.email,
-    }),
-    { status: 200, headers },
-  );
+  return new Response(JSON.stringify({ ok: true, provider: tx.provider }), {
+    status: 200,
+    headers,
+  });
 }
 
 async function handleMe(env: Env, request: Request): Promise<Response> {
@@ -298,17 +291,25 @@ async function handleMe(env: Env, request: Request): Promise<Response> {
   // actually reach GitHub — the two differ for an admin signed in with Apple
   // or Google, and for one whose token has lapsed. The SPA needs to tell those
   // apart to say something true.
-  const privileged =
-    admin && session.provider === 'github' && env.DB
-      ? (await getActorToken(env.DB, session.sid).catch(() => null)) !== null
-      : false;
+  let privileged = false;
+  // The cookie carries no display claims, so the sealed actor bundle is the
+  // only place a login exists server-side — which means only a privileged
+  // admin has one to show. Everyone else renders as simply signed in.
+  let login: string | null = null;
+  if (admin && session.provider === 'github' && env.DB) {
+    const row = await getActorToken(env.DB, session.sid).catch(() => null);
+    privileged = row !== null;
+    if (row && env.TOKEN_ENCRYPTION_KEY) {
+      const bundle = await open<SealedActorToken>(env.TOKEN_ENCRYPTION_KEY, row.secret);
+      login = bundle?.login ?? null;
+    }
+  }
 
   return json(
     {
       authenticated: true,
       provider: session.provider,
-      login: session.login,
-      email: session.email,
+      login,
       expiresAt: session.exp,
       admin,
       privileged,

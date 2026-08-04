@@ -11,8 +11,11 @@ export type Provider = 'apple' | 'google' | 'github';
 
 export type Session = {
   provider: Provider;
+  /**
+   * Only ever non-null for a privileged admin: the Worker keeps no display
+   * fields for anyone else, so an ordinary session renders as just signed in.
+   */
   login: string | null;
-  email: string | null;
   expiresAt: number;
   /** On the Worker's allowlist, so the review panel may render at all. */
   admin: boolean;
@@ -157,7 +160,6 @@ export async function fetchSession(): Promise<Session | null> {
   return {
     provider: payload.provider,
     login: payload.login ?? null,
-    email: payload.email ?? null,
     expiresAt: payload.expiresAt,
     // Both default to false: a response that does not say you are privileged
     // is not a response that says you are.

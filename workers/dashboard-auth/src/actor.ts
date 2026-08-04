@@ -24,14 +24,24 @@ import type { Identity } from './store.ts';
 const REFRESH_SKEW_SECONDS = 120;
 
 export type ActorTokenResult =
-  | { status: 'ready'; accessToken: string }
+  | { status: 'ready'; accessToken: string; login: string | null }
   | { status: 'unavailable'; error: 'privileges_unavailable' | 'actor_token_unavailable' };
+
+/**
+ * What actually gets sealed: the token bundle plus the login it acts as.
+ *
+ * The login rides here, not in the session cookie — the cookie is signed but
+ * readable, while this blob is read back only on the privileged path, which
+ * is exactly where the audit row needs a name.
+ */
+export type SealedActorToken = UserToken & { login: string | null };
 
 export async function storeActorToken(
   env: Env,
   sid: string,
   identity: Identity,
   token: UserToken,
+  login: string | null,
   now: number,
 ): Promise<void> {
   if (!env.DB) return;
@@ -40,7 +50,7 @@ export async function storeActorToken(
     sid,
     identity,
     {
-      secret: await seal(env.TOKEN_ENCRYPTION_KEY, token),
+      secret: await seal(env.TOKEN_ENCRYPTION_KEY, { ...token, login } satisfies SealedActorToken),
       accessExpiresAt: token.accessExpiresAt,
       refreshExpiresAt: token.refreshExpiresAt,
     },
@@ -98,14 +108,15 @@ export async function loadActorToken(
   const row = await getActorToken(env.DB, session.sid);
   if (!row) return { status: 'unavailable', error: 'actor_token_unavailable' };
 
-  const token = await open<UserToken>(env.TOKEN_ENCRYPTION_KEY, row.secret);
+  const token = await open<SealedActorToken>(env.TOKEN_ENCRYPTION_KEY, row.secret);
   if (!token?.accessToken) {
     await forgetActorToken(env, session.sid);
     return { status: 'unavailable', error: 'actor_token_unavailable' };
   }
+  const login = token.login ?? null;
 
   if (!expired(token.accessExpiresAt, now, REFRESH_SKEW_SECONDS)) {
-    return { status: 'ready', accessToken: token.accessToken };
+    return { status: 'ready', accessToken: token.accessToken, login };
   }
 
   if (!token.refreshToken || expired(token.refreshExpiresAt, now)) {
@@ -128,7 +139,8 @@ export async function loadActorToken(
   const identity: Identity = { provider: session.provider, subject: session.subject };
 
   try {
-    await storeActorToken(env, session.sid, identity, refreshed, now);
+    // The login sealed at sign-in survives every refresh.
+    await storeActorToken(env, session.sid, identity, refreshed, login, now);
   } catch {
     // The new pair could not be persisted, so the old one is already dead and
     // this one is unreachable next request. Fail now rather than act on a
@@ -137,5 +149,5 @@ export async function loadActorToken(
     return { status: 'unavailable', error: 'actor_token_unavailable' };
   }
 
-  return { status: 'ready', accessToken: refreshed.accessToken };
+  return { status: 'ready', accessToken: refreshed.accessToken, login };
 }

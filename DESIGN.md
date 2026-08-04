@@ -418,9 +418,10 @@ cannot read — 207 KB across 14 files:
 
 **Decision.** Signing in with GitHub uses a **GitHub App user authorization**,
 not an OAuth App. For an identity on the `ADMIN_SUBJECTS` allowlist the
-resulting user-to-server token is kept — sealed with AES-GCM, keyed by session
-id, in D1 — and every privileged call is made with it. For everyone else it is
-used once to resolve a login and discarded, exactly as before.
+resulting user-to-server token is kept — sealed with AES-GCM together with the
+login it acts as, keyed by session id, in D1 — and every privileged call is
+made with it. For everyone else it is used once to resolve a login and
+discarded, exactly as before.
 
 So the dashboard does not decide whether a pull request may be approved.
 GitHub does, against the person's own access, and the review it records says
@@ -534,8 +535,18 @@ all and is the right shape for a genuinely destructive fleet-wide action; for
 approving a pull request it means approving twice, and the indirection buys
 nothing the user token does not already give.
 
+**The cookie names no one.** The session cookie is signed, not encrypted, so
+its payload rides readable in every request that carries it. It holds opaque
+identifiers only — provider, subject, session id, clocks. What the SPA may
+show comes from `/auth/me`; the name an audit row records comes from the
+sealed actor bundle, written at sign-in and read back exactly where an action
+needs attributing. The sign-in screen says in one sentence that sign-ins are
+recorded, because a record nobody is told about reads as surveillance however
+small it is.
+
 **Consequence.** Sign-in with GitHub now requires a GitHub App, and existing
-sessions sign out once on deploy because the session claim shape gained an id.
+sessions sign out once on deploy because the session claim shape gained an id
+and dropped its display claims.
 Until `ADMIN_SUBJECTS` is set, nobody is privileged and the panel renders for
 no one — which is the correct resting state for a deployment that has not
 decided who may act.
