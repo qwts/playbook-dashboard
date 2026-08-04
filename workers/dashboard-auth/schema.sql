@@ -7,11 +7,15 @@
 -- last is load-bearing — a privileged action that cannot be recorded does not
 -- happen.
 
+-- Deliberately opaque: no login, no email. The subject is provider-attested —
+-- it arrives through the OAuth code exchange and cannot be forged by the
+-- client — and it identifies the account *to the provider*, who holds every
+-- richer detail at higher fidelity than this Worker could record. Anything
+-- beyond it would be a low-quality copy of evidence someone else keeps better,
+-- and pure leak surface here.
 CREATE TABLE IF NOT EXISTS identities (
   provider      TEXT    NOT NULL,
   subject       TEXT    NOT NULL,
-  login         TEXT,
-  email         TEXT,
   first_seen_at INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL,
   sign_in_count INTEGER NOT NULL DEFAULT 1,

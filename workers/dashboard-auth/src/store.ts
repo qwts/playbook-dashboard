@@ -15,30 +15,24 @@ import type { Provider } from './env.ts';
 export type Identity = {
   provider: Provider;
   subject: string;
-  login: string | null;
-  email: string | null;
 };
 
 /**
- * Upsert on sign-in.
- *
- * `COALESCE` on login and email because absence is not erasure: Apple returns
- * an email only on the first authorization, and a later sign-in carrying null
- * must not delete what the first one learned.
+ * Upsert on sign-in. The subject is the whole record on purpose: it is
+ * provider-attested, sufficient to identify the account to the provider later,
+ * and everything richer is evidence the provider already holds better.
  */
 export async function recordSignIn(db: Database, identity: Identity, now: number): Promise<void> {
   await db
     .prepare(
       `INSERT INTO identities
-         (provider, subject, login, email, first_seen_at, last_seen_at, sign_in_count)
-       VALUES (?, ?, ?, ?, ?, ?, 1)
+         (provider, subject, first_seen_at, last_seen_at, sign_in_count)
+       VALUES (?, ?, ?, ?, 1)
        ON CONFLICT(provider, subject) DO UPDATE SET
-         login         = COALESCE(excluded.login, identities.login),
-         email         = COALESCE(excluded.email, identities.email),
          last_seen_at  = excluded.last_seen_at,
          sign_in_count = identities.sign_in_count + 1`,
     )
-    .bind(identity.provider, identity.subject, identity.login, identity.email, now, now)
+    .bind(identity.provider, identity.subject, now, now)
     .run();
 }
 
@@ -111,6 +105,12 @@ export type AuditAttempt = {
   /** The client's idempotency key, which is also the primary key. */
   id: string;
   identity: Identity;
+  /**
+   * Kept in the audit row even though the identities table no longer stores
+   * it: this row records what an account *did*, not that it existed, and it
+   * must stay readable on its own during an incident.
+   */
+  login: string | null;
   action: string;
   repo: string;
   target: string;
@@ -151,7 +151,7 @@ export async function beginAudit(
       now,
       attempt.identity.provider,
       attempt.identity.subject,
-      attempt.identity.login,
+      attempt.login,
       attempt.action,
       attempt.repo,
       attempt.target,
