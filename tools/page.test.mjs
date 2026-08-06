@@ -261,32 +261,58 @@ const DESIGN = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
 
 function recordedDigests(markdown) {
   const table = new Map();
-  for (const [, file, sha256] of markdown.matchAll(
-    /\|\s*`([\w.-]+\.woff2)`\s*\|\s*[\d,]+\s*\|\s*`([0-9a-f]{64})`\s*\|/giu,
-  )) {
-    table.set(file, sha256.toLowerCase());
+  for (const line of markdown.split(/\r?\n/u)) {
+    if (!line.trimStart().startsWith('|')) continue;
+    const file = line.match(/`?([\w.-]+\.woff2)`?/iu);
+    if (!file) continue;
+    const digest = line.slice(file.index + file[0].length).match(/`?([0-9a-f]{64})`?/iu);
+    if (digest) table.set(file[1], digest[1].toLowerCase());
   }
   return table;
 }
+
+test('DESIGN.md digest rows tolerate presentation-only table changes', () => {
+  const digest = 'a'.repeat(64);
+  const recorded = recordedDigests(
+    `| File | Human-readable size | Notes | SHA-256 | Extra |\n` +
+      `| --- | --- | --- | --- | --- |\n` +
+      `| \`Quoted-Pi.woff2\` | about 7 KiB | vendored | \`${digest}\` | yes |\n` +
+      `| Unquoted-Pi.woff2 | 8 KB | vendored | ${digest.toUpperCase()} | yes |`,
+  );
+
+  assert.deepEqual(recorded, new Map([
+    ['Quoted-Pi.woff2', digest],
+    ['Unquoted-Pi.woff2', digest],
+  ]));
+});
 
 test('DESIGN.md records a digest for every Pi font actually vendored', () => {
   const recorded = recordedDigests(DESIGN);
   const piFiles = readdirSync(new URL('../public/fonts/', import.meta.url)).filter((file) =>
     file.endsWith('-Pi.woff2'),
   );
+  const present = new Set(piFiles);
   assert.ok(piFiles.length >= 7, `expected the vendored Pi faces, found ${piFiles.length}`);
 
   for (const file of piFiles) {
     assert.ok(recorded.has(file), `${file} is vendored but DESIGN.md records no digest for it`);
   }
+  for (const file of recorded.keys()) {
+    if (!file.endsWith('-Pi.woff2')) continue;
+    assert.ok(present.has(file), `${file} has a DESIGN.md digest but is missing from public/fonts/`);
+  }
 });
 
 test('every vendored Pi font matches the digest DESIGN.md records for it', () => {
   const recorded = recordedDigests(DESIGN);
+  const piFiles = readdirSync(new URL('../public/fonts/', import.meta.url)).filter((file) =>
+    file.endsWith('-Pi.woff2'),
+  );
   const checked = [];
 
-  for (const [file, expected] of recorded) {
-    if (!file.endsWith('-Pi.woff2')) continue;
+  for (const file of piFiles) {
+    const expected = recorded.get(file);
+    assert.ok(expected, `${file} is vendored but DESIGN.md records no digest for it`);
     checked.push(file);
     const bytes = readFileSync(new URL(`../public/fonts/${file}`, import.meta.url));
     const actual = createHash('sha256').update(bytes).digest('hex');
