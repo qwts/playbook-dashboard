@@ -24,6 +24,7 @@ function valid(overrides = {}) {
     unreadable: 0,
     collection: { denied: 0, rateLimited: 0, failed: 0 },
     repos: [repo()],
+    qualifications: null,
     ...overrides,
   };
 }

@@ -1286,6 +1286,7 @@ function envelope(row) {
     unreadable: 0,
     collection: { denied: 0, rateLimited: 0, failed: 0 },
     repos: [row],
+    qualifications: null,
   };
 }
 

@@ -21,6 +21,10 @@ import {
   visibleRepos,
   unreadableCount,
   withheldCount,
+  latestQualifications,
+  qualificationRunLabel,
+  toneForQualification,
+  toneForQualificationRun,
 } from './lib/aggregate';
 import type { Tone } from './lib/aggregate';
 import { PROVIDER_LABELS, type Session } from './lib/auth';
@@ -761,6 +765,139 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="section">
+        <header>
+          <h2>Judge qualifications</h2>
+          <p className="lede">
+            ACA calibrate lane — which provider/model routes are qualified to judge each check, and
+            the exam history behind them.
+          </p>
+        </header>
+        {state.snapshot.qualifications === null ? (
+          <p className="lede">
+            Qualification data is unavailable in this snapshot — unknown, not empty. The collector
+            could not read the calibrate lane on {'qwts/agentic-code-analysis'}.
+          </p>
+        ) : (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Check</th>
+                    <th>Route</th>
+                    <th>Qualified</th>
+                    <th>Level</th>
+                    <th>Prompt</th>
+                    <th>Fixture suite</th>
+                    <th>Examined</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {latestQualifications(state.snapshot.qualifications).map((row) => (
+                    <tr key={`${row.check} ${row.provider ?? ''} ${row.model ?? ''}`}>
+                      <td>{row.check}</td>
+                      <td className="muted">
+                        {row.provider ?? '?'}/{row.model ?? '?'}
+                      </td>
+                      <td>
+                        <span className="badge" data-tone={toneForQualification(row)}>
+                          {row.qualified ? 'yes' : 'no'}
+                        </span>
+                      </td>
+                      <td className="muted">
+                        {row.requiredLevel === null ? (
+                          'ungraded'
+                        ) : (
+                          `${row.achievedLevel ?? 'none'} of ${row.requiredLevel}`
+                        )}
+                      </td>
+                      <td className="muted">{row.promptVersion ?? <Glyph glyph="—" word="unknown" />}</td>
+                      <td className="muted">{row.fixtureSuite ?? <Glyph glyph="—" word="unknown" />}</td>
+                      <td className="muted">
+                        {row.url ? (
+                          <a className="repo-link" href={row.url} rel="noreferrer">
+                            {formatRelative(row.createdAt, now)}
+                          </a>
+                        ) : (
+                          formatRelative(row.createdAt, now)
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {latestQualifications(state.snapshot.qualifications).length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="muted">
+                        No readable exam artifacts in the collection window — routes may exist whose
+                        artifacts have expired; see the history below.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Exam</th>
+                    <th>Route</th>
+                    <th>Commit</th>
+                    <th>Outcome</th>
+                    <th>Checks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.snapshot.qualifications.runs.map((run) => (
+                    <tr key={run.runId}>
+                      <td className="muted">
+                        {run.url ? (
+                          <a className="repo-link" href={run.url} rel="noreferrer">
+                            {formatRelative(run.createdAt, now)}
+                          </a>
+                        ) : (
+                          formatRelative(run.createdAt, now)
+                        )}
+                      </td>
+                      <td className="muted">
+                        {run.provider ?? '?'}/{run.model ?? '?'}
+                      </td>
+                      <td className="muted">{run.headSha ?? <Glyph glyph="—" word="unknown" />}</td>
+                      <td>
+                        <span className="badge" data-tone={toneForQualificationRun(run)}>
+                          {qualificationRunLabel(run)}
+                        </span>
+                      </td>
+                      <td className="muted">
+                        {run.results === null ? (
+                          <Glyph glyph="—" word="unknown" />
+                        ) : (
+                          run.results
+                            .map((result) => `${result.check}${result.qualified ? '' : ' ✗'}`)
+                            .join(', ')
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {state.snapshot.qualifications.runs.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="muted">
+                        No completed calibrate runs in the collection window.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <p className="lede">
+              A qualification is a tuple — check, prompt version, fixture suite, provider, model — so
+              a changed prompt or fixture suite means the route re-sits the exam. Artifacts expire
+              after 30 days; expired rows state the run, never its verdicts.
+            </p>
+          </>
+        )}
       </section>
     </div>
   );

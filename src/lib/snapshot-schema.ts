@@ -138,7 +138,38 @@ export const CAPS = {
   workflowName: MAX_WORKFLOW_NAME_LENGTH,
   conclusion: 32,
   status: 32,
+  /**
+   * One cap for the qualification family — check name, provider, model,
+   * prompt version, fixture-suite id, level id. The longest real value today
+   * is a `sha256:`-prefixed suite id at 23 characters; 80 bounds a hostile
+   * artifact without ever truncating a legitimate one.
+   */
+  qualification: 80,
 } as const;
+
+/**
+ * Bounds on the qualification subtree, defined here — where they are enforced
+ * last — and imported by the collector, the `workflowName` pattern. A snapshot
+ * exceeding them is refused whole rather than truncated: unlike a string cap,
+ * a row cap that silently drops rows would present a partial history as the
+ * whole one.
+ */
+export const MAX_QUALIFICATION_RUNS = 30;
+export const MAX_RESULTS_PER_RUN = 20;
+export const MAX_LEVELS_PER_RESULT = 8;
+
+/**
+ * How one run's artifacts were resolved, bound to `results` the way a pillar
+ * reason is bound to its status: `read` is the only state that may carry rows,
+ * and both absence states must say which they are — `expired` is GitHub's
+ * 30-day retention doing its documented job, `unreadable` is this run failing
+ * to learn something it set out to learn. Collapsing them would let a failed
+ * read wear retention's alibi.
+ */
+export const QUALIFICATION_ARTIFACT_STATES = ['read', 'expired', 'unreadable'] as const;
+
+/** The graded-ladder vocabulary, verbatim from the ACA self-test contract. */
+export const QUALIFICATION_LEVEL_STATUSES = ['passed', 'failed', 'skipped'] as const;
 
 const STATUSES = new Set(['active', 'onboarding', 'retired']);
 
@@ -338,6 +369,128 @@ function checkActionsPosture(value: unknown, path: string, violations: string[],
   }
 }
 
+/** A qualification string: capped by the family cap, nullable. */
+const isQualText = (nullable = true) => isText(CAPS.qualification, { nullable });
+
+/** An abbreviated commit id, or null. Anything not hex is not a sha. */
+const isQualSha: Rule = (value) => {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !/^[0-9a-f]{7,12}$/.test(value)) {
+    return 'must be null or 7-12 lowercase hex characters';
+  }
+  return null;
+};
+
+const isRunId: Rule = (value) =>
+  Number.isInteger(value) && (value as number) > 0 ? null : 'must be a positive integer';
+
+/** One check's verdict inside one run. Structured facts, never judge prose. */
+const QUALIFICATION_RESULT: Shape = {
+  check: isQualText(false),
+  promptVersion: isQualText(),
+  fixtureSuite: isQualText(),
+  requiredLevel: isQualText(),
+  achievedLevel: isQualText(),
+  qualified: isBool,
+  levels: null, // handled explicitly: a bounded array of { id, status }
+};
+
+const QUALIFICATION_RUN: Shape = {
+  runId: isRunId,
+  url: isUrl,
+  createdAt: (value, ctx) =>
+    typeof value === 'string' ? isTimestamp(value, ctx) : 'must be a timestamp string',
+  headSha: isQualSha,
+  conclusion: isText(CAPS.conclusion, { nullable: true }),
+  provider: isQualText(),
+  model: isQualText(),
+  artifacts: null, // handled explicitly: paired with results
+  results: null, // handled explicitly: an array of QUALIFICATION_RESULT, or null
+};
+
+const ARTIFACT_STATES = new Set<string>(QUALIFICATION_ARTIFACT_STATES);
+const LEVEL_STATUSES = new Set<string>(QUALIFICATION_LEVEL_STATUSES);
+
+/**
+ * The `qualifications` subtree: the ACA calibrate lane's route-qualification
+ * history. Nullable at the top — the committed fixture states `null` because
+ * the fallback cannot know the matrix — and closed everywhere below, the same
+ * posture as every other subtree.
+ *
+ * The pairing rule is the load-bearing part: `results` is an array iff
+ * `artifacts` is `'read'`, and `null` under both absence states. An artifact
+ * state claiming rows it also says it could not read — or rows beside a state
+ * disclaiming them — is refused whole.
+ */
+function checkQualifications(value: unknown, path: string, violations: string[], ctx: Ctx): void {
+  if (value === null) return;
+  checkShape(
+    value,
+    { source: { repo: isText(CAPS.manifestRepo), workflow: isText(CAPS.manifestPath) }, runs: null },
+    path,
+    violations,
+    ctx,
+  );
+  const runs = (value as { runs?: unknown } | null)?.runs;
+  if (!Array.isArray(runs)) {
+    report(violations, ctx, `${path}.runs must be an array`);
+    return;
+  }
+  if (runs.length > MAX_QUALIFICATION_RUNS) {
+    report(violations, ctx, `${path}.runs exceeds the ${MAX_QUALIFICATION_RUNS}-run bound`);
+    return;
+  }
+  for (const [index, run] of runs.entries()) {
+    if (full(violations, ctx)) return;
+    const runPath = `${path}.runs[${index}]`;
+    checkShape(run, QUALIFICATION_RUN, runPath, violations, ctx);
+    if (run === null || typeof run !== 'object' || Array.isArray(run)) continue;
+
+    const { artifacts, results } = run as { artifacts?: unknown; results?: unknown };
+    if (typeof artifacts !== 'string' || !ARTIFACT_STATES.has(artifacts)) {
+      report(violations, ctx, `${runPath}.artifacts must be one of ${[...ARTIFACT_STATES].join(', ')}`);
+      continue;
+    }
+    if (artifacts !== 'read') {
+      if (results !== null) report(violations, ctx, `${runPath}.results must be null unless artifacts is 'read'`);
+      continue;
+    }
+    if (!Array.isArray(results) || results.length === 0) {
+      report(violations, ctx, `${runPath}.results must be a non-empty array when artifacts is 'read'`);
+      continue;
+    }
+    if (results.length > MAX_RESULTS_PER_RUN) {
+      report(violations, ctx, `${runPath}.results exceeds the ${MAX_RESULTS_PER_RUN}-result bound`);
+      continue;
+    }
+    for (const [ri, result] of results.entries()) {
+      if (full(violations, ctx)) return;
+      const resultPath = `${runPath}.results[${ri}]`;
+      checkShape(result, QUALIFICATION_RESULT, resultPath, violations, ctx);
+      const levels = (result as { levels?: unknown } | null)?.levels;
+      if (!Array.isArray(levels) || levels.length > MAX_LEVELS_PER_RESULT) {
+        report(violations, ctx, `${resultPath}.levels must be an array of at most ${MAX_LEVELS_PER_RESULT}`);
+        continue;
+      }
+      for (const [li, level] of levels.entries()) {
+        checkShape(
+          level,
+          {
+            id: isQualText(false),
+            status: (v) =>
+              typeof v === 'string' && LEVEL_STATUSES.has(v)
+                ? null
+                : `must be one of ${[...LEVEL_STATUSES].join(', ')}`,
+          },
+          `${resultPath}.levels[${li}]`,
+          violations,
+          ctx,
+        );
+      }
+    }
+  }
+}
+
 const REPO: Shape = {
   name: isText(CAPS.name),
   // Only `public` may be published at all. The field is retained so a stale or
@@ -372,6 +525,7 @@ export const SNAPSHOT: Shape = {
     failed: (value) => (Number.isInteger(value) && (value as number) >= 0 ? null : 'must be a count'),
   },
   repos: null, // handled explicitly: an array of REPO
+  qualifications: null, // handled explicitly: nullable subtree with pairing rules
 };
 
 // --- walking -------------------------------------------------------------
@@ -491,6 +645,20 @@ export function validateSnapshot(
     const names = snap.repos.map((repo: unknown) => (repo as { name?: unknown } | null)?.name);
     if (new Set(names).size !== names.length) {
       report(violations, ctx, 'snapshot.repos contains duplicate names');
+    }
+  }
+
+  // Marked `null` in SNAPSHOT: nullable at the top, pairing rules below.
+  if (snapshot !== null && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+    if (!Object.hasOwn(snapshot, 'qualifications')) {
+      report(violations, ctx, 'snapshot.qualifications is missing');
+    } else {
+      checkQualifications(
+        (snapshot as { qualifications?: unknown }).qualifications,
+        'snapshot.qualifications',
+        violations,
+        ctx,
+      );
     }
   }
 
