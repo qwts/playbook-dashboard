@@ -135,8 +135,79 @@ test('a graded self-test payload maps to structured facts and sheds judge prose'
       { id: 'foundation', status: 'passed' },
       { id: 'field', status: 'passed' },
     ],
+    fixtures: [
+      {
+        name: 'new-composed',
+        level: null,
+        status: 'ok',
+        expected: { assessment: null, verdict: null },
+        actual: null,
+      },
+    ],
   });
   assert.ok(!JSON.stringify(result).includes('judge prose'), 'fixture notes must not survive');
+});
+
+test('fixture grading maps expectation, judgment, and criteria — and the note dies here', () => {
+  const payload = {
+    check: 'context-footprint',
+    qualified: false,
+    fixtures: [
+      {
+        name: 'new-composed',
+        level: 'foundation',
+        status: 'miss',
+        expected: { assessment: 'new-compliant', verdict: 'pass' },
+        actual: {
+          assessment: 'new-violating',
+          verdict: 'fail',
+          criteria: ['duplicated-context', 'mixed-responsibility'],
+          residualCriteria: [],
+          note: 'long judge prose',
+        },
+      },
+      { name: 'legacy-improved-residual', level: 'field', status: 'skipped', expected: { verdict: 'pass' } },
+    ],
+  };
+  const { fixtures } = parseSelfTest(JSON.stringify(payload));
+  assert.deepEqual(fixtures, [
+    {
+      name: 'new-composed',
+      level: 'foundation',
+      status: 'miss',
+      expected: { assessment: 'new-compliant', verdict: 'pass' },
+      actual: {
+        assessment: 'new-violating',
+        verdict: 'fail',
+        criteria: ['duplicated-context', 'mixed-responsibility'],
+      },
+    },
+    {
+      name: 'legacy-improved-residual',
+      level: 'field',
+      status: 'skipped',
+      expected: { assessment: null, verdict: 'pass' },
+      actual: null,
+    },
+  ]);
+  assert.ok(!JSON.stringify(fixtures).includes('judge prose'));
+});
+
+test('malformed fixture detail is refused whole; the verdict stands alone', () => {
+  const base = { check: 'x', qualified: true };
+  const cases = [
+    [{ name: 'a', status: 'exploded' }],
+    [{ status: 'ok' }],
+    [{ name: 'a', status: 'ok', actual: { criteria: ['bad\u0000code'] } }],
+    Array.from({ length: 25 }, (_, i) => ({ name: `f${i}`, status: 'ok' })),
+    'not an array',
+  ];
+  for (const fixtures of cases) {
+    const result = parseSelfTest(JSON.stringify({ ...base, fixtures }));
+    assert.equal(result.fixtures, null, `${JSON.stringify(fixtures).slice(0, 60)} should refuse detail`);
+    assert.equal(result.qualified, true, 'the verdict survives the refused detail');
+  }
+  assert.equal(parseSelfTest(JSON.stringify(base)).fixtures, null, 'absent detail is null, not []');
 });
 
 test('an ungraded payload is pass/fail with null levels of requirement', () => {
@@ -365,6 +436,49 @@ test("a 'read' state disclaiming results is refused too", () => {
   };
   const violations = validateSnapshot(envelope(qualifications));
   assert.ok(violations.some((v) => v.includes('must be a non-empty array')));
+});
+
+test('a fixture entry smuggling a note key is refused by the contract', () => {
+  const qualifications = {
+    source: { ...QUALIFICATIONS_SOURCE },
+    runs: [
+      {
+        runId: 1,
+        url: null,
+        createdAt: '2026-08-18T14:50:00Z',
+        headSha: null,
+        conclusion: null,
+        provider: 'qwen',
+        model: 'qwen3.7-max',
+        artifacts: 'read',
+        results: [
+          {
+            check: 'context-footprint',
+            promptVersion: null,
+            fixtureSuite: null,
+            requiredLevel: null,
+            achievedLevel: null,
+            qualified: true,
+            levels: [],
+            fixtures: [
+              {
+                name: 'new-composed',
+                level: null,
+                status: 'ok',
+                expected: { assessment: null, verdict: null },
+                actual: { assessment: null, verdict: null, criteria: [], note: 'prose' },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const violations = validateSnapshot(envelope(qualifications));
+  assert.ok(violations.some((v) => v.includes('note is not in the published schema')));
+  // The same shape without the note is exactly what the collector emits.
+  delete qualifications.runs[0].results[0].fixtures[0].actual.note;
+  assert.deepEqual(validateSnapshot(envelope(qualifications)), []);
 });
 
 test('an unknown key below qualifications is a field nobody decided to publish', () => {

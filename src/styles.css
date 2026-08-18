@@ -703,3 +703,26 @@ tr:last-child td {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Qualification fixture detail: the expandable evidence row under a route. */
+.fixture-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.fixture-detail > td {
+  padding: 0;
+  background: rgba(15, 20, 18, 0.5);
+}
+
+.fixture-detail table {
+  font-size: 0.84rem;
+}
+
+.fixture-detail th {
+  font-size: 0.66rem;
+}

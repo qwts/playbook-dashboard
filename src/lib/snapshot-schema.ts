@@ -157,6 +157,15 @@ export const CAPS = {
 export const MAX_QUALIFICATION_RUNS = 30;
 export const MAX_RESULTS_PER_RUN = 20;
 export const MAX_LEVELS_PER_RESULT = 8;
+export const MAX_FIXTURES_PER_RESULT = 24;
+export const MAX_CRITERIA_PER_FIXTURE = 8;
+
+/**
+ * How one fixture graded, verbatim from the ACA self-test contract: `ok` — the
+ * judge matched the expectation; `miss` — it did not; `skipped` — a higher
+ * level was never reached. Skipped is not graded and never counts either way.
+ */
+export const QUALIFICATION_FIXTURE_STATUSES = ['ok', 'miss', 'skipped'] as const;
 
 /**
  * How one run's artifacts were resolved, bound to `results` the way a pillar
@@ -393,7 +402,71 @@ const QUALIFICATION_RESULT: Shape = {
   achievedLevel: isQualText(),
   qualified: isBool,
   levels: null, // handled explicitly: a bounded array of { id, status }
+  fixtures: null, // handled explicitly: a bounded array, or null when detail was refused
 };
+
+const FIXTURE_STATUSES = new Set<string>(QUALIFICATION_FIXTURE_STATUSES);
+
+/**
+ * One fixture's grading: what the exam expected, what the judge decided, and
+ * the criteria codes it flagged. `expected` is always an object; `actual` is
+ * null for a fixture the ladder never reached. Names, vocabulary tokens, and
+ * bounded code lists only — the judge's `note` prose has no key here, so a
+ * snapshot carrying one fails the closed-key walk.
+ */
+const QUALIFICATION_FIXTURE: Shape = {
+  name: isQualText(false),
+  level: isQualText(),
+  status: (value) =>
+    typeof value === 'string' && FIXTURE_STATUSES.has(value)
+      ? null
+      : `must be one of ${[...FIXTURE_STATUSES].join(', ')}`,
+  expected: {
+    assessment: isQualText(),
+    verdict: isQualText(),
+  },
+  actual: null, // handled explicitly: null or { assessment, verdict, criteria }
+};
+
+const QUALIFICATION_FIXTURE_ACTUAL: Shape = {
+  assessment: isQualText(),
+  verdict: isQualText(),
+  criteria: null, // handled explicitly: a bounded array of codes
+};
+
+function checkFixtures(value: unknown, path: string, violations: string[], ctx: Ctx): void {
+  // `null` is detail refused at collect time; `undefined` is a snapshot
+  // published before the field existed (a cached artifact the browser still
+  // validates). Both render as detail unavailable — the verdict stands alone.
+  if (value === null || value === undefined) return;
+  if (!Array.isArray(value) || value.length > MAX_FIXTURES_PER_RESULT) {
+    report(violations, ctx, `${path} must be null or an array of at most ${MAX_FIXTURES_PER_RESULT}`);
+    return;
+  }
+  for (const [index, fixture] of value.entries()) {
+    if (full(violations, ctx)) return;
+    const fixturePath = `${path}[${index}]`;
+    checkShape(fixture, QUALIFICATION_FIXTURE, fixturePath, violations, ctx);
+    if (fixture === null || typeof fixture !== 'object' || Array.isArray(fixture)) continue;
+    const actual = (fixture as { actual?: unknown }).actual;
+    if (actual === null) continue;
+    checkShape(actual, QUALIFICATION_FIXTURE_ACTUAL, `${fixturePath}.actual`, violations, ctx);
+    if (actual === null || typeof actual !== 'object' || Array.isArray(actual)) continue;
+    const criteria = (actual as { criteria?: unknown }).criteria;
+    if (!Array.isArray(criteria) || criteria.length > MAX_CRITERIA_PER_FIXTURE) {
+      report(
+        violations,
+        ctx,
+        `${fixturePath}.actual.criteria must be an array of at most ${MAX_CRITERIA_PER_FIXTURE}`,
+      );
+      continue;
+    }
+    for (const [ci, code] of criteria.entries()) {
+      const reason = isQualText(false)(code, ctx);
+      if (reason) report(violations, ctx, `${fixturePath}.actual.criteria[${ci}] ${reason}`);
+    }
+  }
+}
 
 const QUALIFICATION_RUN: Shape = {
   runId: isRunId,
@@ -467,6 +540,12 @@ function checkQualifications(value: unknown, path: string, violations: string[],
       if (full(violations, ctx)) return;
       const resultPath = `${runPath}.results[${ri}]`;
       checkShape(result, QUALIFICATION_RESULT, resultPath, violations, ctx);
+      checkFixtures(
+        (result as { fixtures?: unknown } | null)?.fixtures,
+        `${resultPath}.fixtures`,
+        violations,
+        ctx,
+      );
       const levels = (result as { levels?: unknown } | null)?.levels;
       if (!Array.isArray(levels) || levels.length > MAX_LEVELS_PER_RESULT) {
         report(violations, ctx, `${resultPath}.levels must be an array of at most ${MAX_LEVELS_PER_RESULT}`);

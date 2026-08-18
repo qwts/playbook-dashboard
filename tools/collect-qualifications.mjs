@@ -27,16 +27,25 @@
 import { inflateRawSync } from 'node:zlib';
 import {
   CAPS,
+  MAX_CRITERIA_PER_FIXTURE,
+  MAX_FIXTURES_PER_RESULT,
   MAX_LEVELS_PER_RESULT,
   MAX_QUALIFICATION_RUNS,
   MAX_RESULTS_PER_RUN,
+  QUALIFICATION_FIXTURE_STATUSES,
   sanitizeGithubUrl,
 } from '../src/lib/snapshot-schema.ts';
 
 // The bounds live in the schema — where they are enforced last — and are
 // re-exported here so the tests exercise collector and contract against the
 // same numbers.
-export { MAX_LEVELS_PER_RESULT, MAX_QUALIFICATION_RUNS, MAX_RESULTS_PER_RUN };
+export {
+  MAX_CRITERIA_PER_FIXTURE,
+  MAX_FIXTURES_PER_RESULT,
+  MAX_LEVELS_PER_RESULT,
+  MAX_QUALIFICATION_RUNS,
+  MAX_RESULTS_PER_RUN,
+};
 
 /** Where qualifications come from — the only repo and workflow ever read. */
 export const QUALIFICATIONS_SOURCE = Object.freeze({
@@ -143,6 +152,47 @@ export function unzip(buffer) {
 }
 
 const LEVEL_STATUSES = new Set(['passed', 'failed', 'skipped']);
+const FIXTURE_STATUSES = new Set(QUALIFICATION_FIXTURE_STATUSES);
+
+/**
+ * The per-fixture grading, or null when any entry is malformed or over-bound —
+ * the detail is refused whole rather than published as a partial ladder, while
+ * the result's verdict stands on its own. The judge's `note` prose is the one
+ * field deliberately never read.
+ */
+export function parseFixtures(raw) {
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw) || raw.length > MAX_FIXTURES_PER_RESULT) return null;
+  const fixtures = [];
+  for (const entry of raw) {
+    const name = qualText(entry?.name);
+    const status = FIXTURE_STATUSES.has(entry?.status) ? entry.status : null;
+    if (name === null || status === null) return null;
+    let actual = null;
+    if (entry.actual !== undefined && entry.actual !== null) {
+      const rawCriteria = Array.isArray(entry.actual.criteria) ? entry.actual.criteria : [];
+      if (rawCriteria.length > MAX_CRITERIA_PER_FIXTURE) return null;
+      const criteria = rawCriteria.map((code) => qualText(code));
+      if (criteria.some((code) => code === null)) return null;
+      actual = {
+        assessment: qualText(entry.actual.assessment),
+        verdict: qualText(entry.actual.verdict),
+        criteria,
+      };
+    }
+    fixtures.push({
+      name,
+      level: qualText(entry.level),
+      status,
+      expected: {
+        assessment: qualText(entry.expected?.assessment),
+        verdict: qualText(entry.expected?.verdict),
+      },
+      actual,
+    });
+  }
+  return fixtures;
+}
 
 /**
  * One `--self-test --json` payload → one published result row, or null when
@@ -194,6 +244,7 @@ export function parseSelfTest(raw) {
     achievedLevel: graded ? qualText(body.achievedLevel) : null,
     qualified,
     levels,
+    fixtures: parseFixtures(body.fixtures),
   };
 }
 
