@@ -1,4 +1,4 @@
-import type { RepoSnapshot, Snapshot } from '../types/snapshot';
+import type { Qualifications, QualificationRun, RepoSnapshot, Snapshot } from '../types/snapshot';
 import { PILLARS, STALE_MS } from './snapshot-schema.ts';
 
 /**
@@ -341,4 +341,82 @@ export function ciLabel(repo: RepoSnapshot): string {
   if (!repo.ci.workflowName && !repo.ci.conclusion) return 'no CI';
   if (repo.ci.status === 'in_progress' || repo.ci.status === 'queued') return 'running';
   return repo.ci.conclusion ?? repo.ci.status ?? 'unknown';
+}
+
+/**
+ * The current qualification matrix: the latest verdict per check and
+ * provider/model route, derived from run history at render time. The snapshot
+ * deliberately carries no denormalized "current" table — one source of truth,
+ * and a stale hand-edited artifact cannot disagree with itself about what is
+ * current.
+ *
+ * Runs whose artifacts expired or failed to read contribute nothing here:
+ * absence of evidence about a route is rendered in the history, not silently
+ * promoted into the matrix as if it were a measurement.
+ */
+export type QualificationRouteRow = {
+  check: string;
+  provider: string | null;
+  model: string | null;
+  qualified: boolean;
+  requiredLevel: string | null;
+  achievedLevel: string | null;
+  promptVersion: string | null;
+  fixtureSuite: string | null;
+  runId: number;
+  url: QualificationRun['url'];
+  createdAt: string;
+};
+
+export function latestQualifications(qualifications: Qualifications | null): QualificationRouteRow[] {
+  if (qualifications === null) return [];
+  const latest = new Map<string, QualificationRouteRow>();
+  for (const run of qualifications.runs) {
+    if (run.artifacts !== 'read' || run.results === null) continue;
+    for (const result of run.results) {
+      const key = `${result.check} ${run.provider ?? ''} ${run.model ?? ''}`;
+      const seen = latest.get(key);
+      // GitHub lists runs newest-first, but ordering is the API's claim, not
+      // the artifact's — compare timestamps rather than trusting position.
+      if (seen && Date.parse(seen.createdAt) >= Date.parse(run.createdAt)) continue;
+      latest.set(key, {
+        check: result.check,
+        provider: run.provider,
+        model: run.model,
+        qualified: result.qualified,
+        requiredLevel: result.requiredLevel,
+        achievedLevel: result.achievedLevel,
+        promptVersion: result.promptVersion,
+        fixtureSuite: result.fixtureSuite,
+        runId: run.runId,
+        url: run.url,
+        createdAt: run.createdAt,
+      });
+    }
+  }
+  return [...latest.values()].sort(
+    (a, b) =>
+      a.check.localeCompare(b.check) ||
+      (a.provider ?? '').localeCompare(b.provider ?? '') ||
+      (a.model ?? '').localeCompare(b.model ?? ''),
+  );
+}
+
+export function toneForQualification(row: QualificationRouteRow): Tone {
+  return row.qualified ? 'ok' : 'danger';
+}
+
+/** One run's outcome for the history table, without reading absence as failure. */
+export function qualificationRunLabel(run: QualificationRun): string {
+  if (run.artifacts === 'expired') return 'artifacts expired';
+  if (run.artifacts === 'unreadable') return 'unreadable';
+  const results = run.results ?? [];
+  const qualified = results.filter((result) => result.qualified).length;
+  return `${qualified}/${results.length} qualified`;
+}
+
+export function toneForQualificationRun(run: QualificationRun): Tone {
+  if (run.artifacts !== 'read') return 'muted';
+  const results = run.results ?? [];
+  return results.every((result) => result.qualified) ? 'ok' : 'warn';
 }

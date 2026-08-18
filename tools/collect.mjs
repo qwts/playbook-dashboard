@@ -33,6 +33,7 @@ import {
   sanitizeGithubUrl,
 } from '../src/lib/snapshot-schema.ts';
 import { assessWorkflows, MAX_WORKFLOW_FILES, MAX_WORKFLOW_FILE_BYTES } from './pillars.mjs';
+import { collectQualifications } from './collect-qualifications.mjs';
 
 // Re-exported so existing importers keep a stable path. The definitions moved
 // to src/lib/snapshot-schema.ts — zero Node dependencies — so the browser can
@@ -853,6 +854,13 @@ async function main() {
     // a permission that will not change this run, the second is transient.
     collection: collectionHealth(),
     repos,
+    // After the fleet loop so a qualification read can never starve the
+    // posture collection it shares a rate limit with. Fails closed to null
+    // inside; a throw here would abort the whole snapshot over an optional
+    // section. `collection` above is snapshotted first so qualification reads
+    // do not blur the fleet's own health counters — their failure is already
+    // reported by the null itself, via degradedReasons.
+    qualifications: await collectQualifications({ ghJson, gh, warn }),
   };
 
   const reasons = degradedReasons(snapshot);
@@ -985,6 +993,16 @@ export function degradedReasons(snapshot) {
   if (Number.isInteger(unreadable) && unreadable > 0) {
     reasons.push(`${unreadable} repos unreadable at the gate`);
   }
+
+  // `qualifications: null` is deliberately NOT a degradation. The committed
+  // fallback fixture must state null — it cannot know the matrix — and the
+  // fixture-is-not-degraded invariant is load-bearing: a fallback that reads
+  // as degraded would redden every failed-collection deploy twice. A live
+  // failure to read the calibrate lane is loud in two other places instead:
+  // the collect log (`qualifications: collection failed`) and the page, which
+  // renders the section as unknown rather than empty. Qualifications describe
+  // another repo's exam lane, not this fleet's security posture — the gate
+  // this function feeds.
 
   let unknown = 0;
   for (const repo of snapshot?.repos ?? []) {

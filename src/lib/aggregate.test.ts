@@ -92,6 +92,7 @@ function snapshot(repos: RepoSnapshot[], withheld = 0, unreadable = 0): Snapshot
     unreadable,
     collection: { denied: 0, rateLimited: 0, failed: 0 },
     repos,
+    qualifications: null,
   };
 }
 

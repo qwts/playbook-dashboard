@@ -45,6 +45,65 @@ export type Snapshot = {
    */
   collection: CollectionHealth;
   repos: RepoSnapshot[];
+  /**
+   * The ACA calibrate lane's judge-qualification history, read from public
+   * workflow artifacts on `qwts/agentic-code-analysis`. `null` when the
+   * section could not be collected at all — the committed fixture's state,
+   * and the fail-closed result of a missing Actions-read grant. Unknown
+   * renders as unknown, never as an empty-but-healthy matrix.
+   */
+  qualifications: Qualifications | null;
+};
+
+/** Route-qualification history from the ACA calibrate workflow. */
+export type Qualifications = {
+  source: {
+    /** e.g. `qwts/agentic-code-analysis`. */
+    repo: string;
+    /** e.g. `calibrate.yml`. */
+    workflow: string;
+  };
+  /** Most-recent completed calibrate runs, newest first as listed by GitHub. */
+  runs: QualificationRun[];
+};
+
+/**
+ * How one run's artifacts resolved. `read` is the only state that may carry
+ * results. `expired` is GitHub's 30-day retention doing its documented job;
+ * `unreadable` is this collection failing to learn something it set out to
+ * learn. The two absence states are deliberately not collapsed.
+ */
+export type QualificationArtifactState = 'read' | 'expired' | 'unreadable';
+
+export type QualificationRun = {
+  runId: number;
+  url: GithubUrl | null;
+  createdAt: string;
+  /** Abbreviated commit id of the aca tree the exam ran against, or null. */
+  headSha: string | null;
+  conclusion: string | null;
+  /** Route under exam. From the artifact when readable, else the run title. */
+  provider: string | null;
+  model: string | null;
+  artifacts: QualificationArtifactState;
+  /** Non-null and non-empty iff `artifacts` is `'read'`. */
+  results: QualificationResult[] | null;
+};
+
+/**
+ * One check's verdict inside one run — structured facts only, never judge
+ * prose. `requiredLevel: null` means the check reports ungraded pass/fail
+ * (no ACA-0012 manifest), which is not the same claim as level-zero.
+ */
+export type QualificationResult = {
+  check: string;
+  promptVersion: string | null;
+  /** Content id of the fixture suite the exam used, e.g. `sha256:…`. */
+  fixtureSuite: string | null;
+  requiredLevel: string | null;
+  achievedLevel: string | null;
+  qualified: boolean;
+  levels: { id: string; status: 'passed' | 'failed' | 'skipped' }[];
 };
 
 /** Counts only, fleet-wide. Never attributed to a repository. */
