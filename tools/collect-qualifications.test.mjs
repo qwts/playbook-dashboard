@@ -7,6 +7,7 @@ import {
   QUALIFICATIONS_SOURCE,
   collectQualifications,
   parseSelfTest,
+  qualIdent,
   qualSha,
   qualText,
   routeFromTitle,
@@ -79,6 +80,19 @@ test('qualification text is capped and refuses control characters', () => {
   assert.equal(qualText('a'.repeat(81)), null, 'over-cap is refused, not truncated');
   assert.equal(qualText('a\u0000b'), null);
   assert.equal(qualText('a\nb'), null);
+});
+
+test('judge-controlled tokens take the identifier grammar, not the text cap', () => {
+  assert.equal(qualIdent('context-footprint'), 'context-footprint');
+  assert.equal(qualIdent('sha256:b2f308ffac838574'), 'sha256:b2f308ffac838574');
+  assert.equal(qualIdent('qwen3.7-max'), 'qwen3.7-max');
+  assert.equal(qualIdent('a judged sentence'), null, 'prose has whitespace; refused');
+  assert.equal(qualIdent('src/checks/index.ts'), null, 'a file path has slashes; refused');
+  assert.equal(qualIdent('-leading-dash'), null);
+  assert.equal(qualIdent('a'.repeat(80)), 'a'.repeat(80));
+  assert.equal(qualIdent('a'.repeat(81)), null);
+  assert.equal(qualIdent(''), null);
+  assert.equal(qualIdent(42), null);
 });
 
 test('a head sha is hex or nothing, and always abbreviated', () => {
@@ -199,6 +213,12 @@ test('malformed fixture detail is refused whole; the verdict stands alone', () =
     [{ name: 'a', status: 'exploded' }],
     [{ status: 'ok' }],
     [{ name: 'a', status: 'ok', actual: { criteria: ['bad\u0000code'] } }],
+    [{ name: 'a', status: 'ok', actual: { criteria: ['prose criteria code'] } }],
+    [{ name: 'a', status: 'ok', actual: { criteria: ['a/path'] } }],
+    [{ name: 'a', status: 'ok', actual: { criteria: 'not-an-array' } }],
+    [{ name: 'a', status: 'ok', level: 'two words' }],
+    [{ name: 'a', status: 'ok', expected: { verdict: 'maybe' } }],
+    [{ name: 'a', status: 'ok', actual: { assessment: 'prose with spaces' } }],
     Array.from({ length: 25 }, (_, i) => ({ name: `f${i}`, status: 'ok' })),
     'not an array',
   ];
@@ -226,6 +246,12 @@ test('an unrecognizable payload is null, not a half-row', () => {
     null,
     'a status outside the vocabulary poisons the row rather than shipping as prose',
   );
+});
+
+test('a result-level token outside the grammar refuses the whole row', () => {
+  assert.equal(parseSelfTest(JSON.stringify({ check: 'x', qualified: true, promptVersion: 'v1 with spaces' })), null);
+  assert.equal(parseSelfTest(JSON.stringify({ check: 'x', qualified: true, model: 'a/model' })), null);
+  assert.notEqual(parseSelfTest(JSON.stringify({ check: 'x', qualified: true })), null, 'absent tokens stay honest nulls');
 });
 
 test('a payload without a boolean verdict is refused, never defaulted to failed', () => {

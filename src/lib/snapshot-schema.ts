@@ -167,6 +167,24 @@ export const MAX_CRITERIA_PER_FIXTURE = 8;
  */
 export const QUALIFICATION_FIXTURE_STATUSES = ['ok', 'miss', 'skipped'] as const;
 
+/** The ACA verdict vocabulary — closed, because a verdict is a claim, not text. */
+export const QUALIFICATION_VERDICTS = ['pass', 'fail', 'warn'] as const;
+
+/**
+ * The grammar for every judge- or artifact-controlled qualification token:
+ * check names, prompt versions, fixture-suite ids (`sha256:…`), levels,
+ * fixture names, assessments, criteria codes, providers, models.
+ *
+ * These fields cross a boundary the threat model treats as model-controlled,
+ * and the generic text sanitizer (cap + control characters) still admits
+ * prose, file paths, and short secret material. An identifier grammar — no
+ * whitespace, no slashes, bounded — is what these values all are when the
+ * suite is behaving, so anything outside it is refused rather than published.
+ * Defined once here, imported by the collector: one definition at both ends
+ * of the pipe.
+ */
+export const QUALIFICATION_IDENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+
 /**
  * How one run's artifacts were resolved, bound to `results` the way a pillar
  * reason is bound to its status: `read` is the only state that may carry rows,
@@ -378,8 +396,23 @@ function checkActionsPosture(value: unknown, path: string, violations: string[],
   }
 }
 
-/** A qualification string: capped by the family cap, nullable. */
-const isQualText = (nullable = true) => isText(CAPS.qualification, { nullable });
+/** A qualification token: the identifier grammar, or null where allowed. */
+const isQualIdent = (nullable = true): Rule => (value) => {
+  if (value === null) return nullable ? null : 'must not be null';
+  if (typeof value !== 'string' || !QUALIFICATION_IDENT.test(value)) {
+    return 'must match the qualification identifier grammar';
+  }
+  return null;
+};
+
+const VERDICTS = new Set<string>(QUALIFICATION_VERDICTS);
+
+const isQualVerdict: Rule = (value) => {
+  if (value === null) return null;
+  return typeof value === 'string' && VERDICTS.has(value)
+    ? null
+    : `must be null or one of ${[...VERDICTS].join(', ')}`;
+};
 
 /** An abbreviated commit id, or null. Anything not hex is not a sha. */
 const isQualSha: Rule = (value) => {
@@ -395,11 +428,11 @@ const isRunId: Rule = (value) =>
 
 /** One check's verdict inside one run. Structured facts, never judge prose. */
 const QUALIFICATION_RESULT: Shape = {
-  check: isQualText(false),
-  promptVersion: isQualText(),
-  fixtureSuite: isQualText(),
-  requiredLevel: isQualText(),
-  achievedLevel: isQualText(),
+  check: isQualIdent(false),
+  promptVersion: isQualIdent(),
+  fixtureSuite: isQualIdent(),
+  requiredLevel: isQualIdent(),
+  achievedLevel: isQualIdent(),
   qualified: isBool,
   levels: null, // handled explicitly: a bounded array of { id, status }
   fixtures: null, // handled explicitly: a bounded array, or null when detail was refused
@@ -415,22 +448,22 @@ const FIXTURE_STATUSES = new Set<string>(QUALIFICATION_FIXTURE_STATUSES);
  * snapshot carrying one fails the closed-key walk.
  */
 const QUALIFICATION_FIXTURE: Shape = {
-  name: isQualText(false),
-  level: isQualText(),
+  name: isQualIdent(false),
+  level: isQualIdent(),
   status: (value) =>
     typeof value === 'string' && FIXTURE_STATUSES.has(value)
       ? null
       : `must be one of ${[...FIXTURE_STATUSES].join(', ')}`,
   expected: {
-    assessment: isQualText(),
-    verdict: isQualText(),
+    assessment: isQualIdent(),
+    verdict: isQualVerdict,
   },
   actual: null, // handled explicitly: null or { assessment, verdict, criteria }
 };
 
 const QUALIFICATION_FIXTURE_ACTUAL: Shape = {
-  assessment: isQualText(),
-  verdict: isQualText(),
+  assessment: isQualIdent(),
+  verdict: isQualVerdict,
   criteria: null, // handled explicitly: a bounded array of codes
 };
 
@@ -462,7 +495,7 @@ function checkFixtures(value: unknown, path: string, violations: string[], ctx: 
       continue;
     }
     for (const [ci, code] of criteria.entries()) {
-      const reason = isQualText(false)(code, ctx);
+      const reason = isQualIdent(false)(code, ctx);
       if (reason) report(violations, ctx, `${fixturePath}.actual.criteria[${ci}] ${reason}`);
     }
   }
@@ -475,8 +508,8 @@ const QUALIFICATION_RUN: Shape = {
     typeof value === 'string' ? isTimestamp(value, ctx) : 'must be a timestamp string',
   headSha: isQualSha,
   conclusion: isText(CAPS.conclusion, { nullable: true }),
-  provider: isQualText(),
-  model: isQualText(),
+  provider: isQualIdent(),
+  model: isQualIdent(),
   artifacts: null, // handled explicitly: paired with results
   results: null, // handled explicitly: an array of QUALIFICATION_RESULT, or null
 };
@@ -555,7 +588,7 @@ function checkQualifications(value: unknown, path: string, violations: string[],
         checkShape(
           level,
           {
-            id: isQualText(false),
+            id: isQualIdent(false),
             status: (v) =>
               typeof v === 'string' && LEVEL_STATUSES.has(v)
                 ? null
