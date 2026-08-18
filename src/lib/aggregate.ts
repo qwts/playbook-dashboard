@@ -1,4 +1,10 @@
-import type { Qualifications, QualificationRun, RepoSnapshot, Snapshot } from '../types/snapshot';
+import type {
+  Qualifications,
+  QualificationFixture,
+  QualificationRun,
+  RepoSnapshot,
+  Snapshot,
+} from '../types/snapshot';
 import { PILLARS, STALE_MS } from './snapshot-schema.ts';
 
 /**
@@ -363,10 +369,33 @@ export type QualificationRouteRow = {
   achievedLevel: string | null;
   promptVersion: string | null;
   fixtureSuite: string | null;
+  fixtures: QualificationFixture[] | null;
   runId: number;
   url: QualificationRun['url'];
   createdAt: string;
 };
+
+/**
+ * `ok` of `graded` for one result's fixture ladder, or null when the detail
+ * is unavailable (refused at collect time, or a snapshot predating the
+ * field). Skipped fixtures are levels the exam never reached and count
+ * toward neither number — 4/4 with one skipped is a clean foundation pass,
+ * not a hidden miss.
+ */
+export function fixtureTally(fixtures: QualificationFixture[] | null | undefined): {
+  ok: number;
+  graded: number;
+} | null {
+  if (!Array.isArray(fixtures)) return null;
+  let ok = 0;
+  let graded = 0;
+  for (const fixture of fixtures) {
+    if (fixture.status === 'skipped') continue;
+    graded += 1;
+    if (fixture.status === 'ok') ok += 1;
+  }
+  return { ok, graded };
+}
 
 export function latestQualifications(qualifications: Qualifications | null): QualificationRouteRow[] {
   if (qualifications === null) return [];
@@ -388,6 +417,7 @@ export function latestQualifications(qualifications: Qualifications | null): Qua
         achievedLevel: result.achievedLevel,
         promptVersion: result.promptVersion,
         fixtureSuite: result.fixtureSuite,
+        fixtures: result.fixtures ?? null,
         runId: run.runId,
         url: run.url,
         createdAt: run.createdAt,

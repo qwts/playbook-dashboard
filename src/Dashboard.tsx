@@ -22,10 +22,12 @@ import {
   unreadableCount,
   withheldCount,
   latestQualifications,
+  fixtureTally,
   qualificationRunLabel,
   toneForQualification,
   toneForQualificationRun,
 } from './lib/aggregate';
+import type { QualificationRouteRow } from './lib/aggregate';
 import type { Tone } from './lib/aggregate';
 import { PROVIDER_LABELS, type Session } from './lib/auth';
 import { Review } from './Review';
@@ -276,6 +278,127 @@ function FloorBits({ repo }: { repo: RepoSnapshot }) {
  * Renders nothing when auth is bypassed for local development, since there is
  * no session to describe.
  */
+/** Expected or judged, rendered as `assessment · verdict` without inventing either. */
+function fixtureClaim(claim: { assessment: string | null; verdict: string | null } | null) {
+  if (claim === null) return <Glyph glyph="—" word="unavailable" />;
+  const parts = [claim.assessment, claim.verdict].filter((part) => part !== null);
+  if (parts.length === 0) return <Glyph glyph="—" word="unknown" />;
+  return parts.join(' · ');
+}
+
+const FIXTURE_STATUS_TONE = { ok: 'ok', miss: 'danger', skipped: 'muted' } as const;
+
+/**
+ * One matrix route with its expandable fixture ladder. The ladder is the
+ * evidence behind the verdict: which fixture missed, what the exam expected,
+ * what the judge decided, and the criteria codes it flagged. A row whose
+ * detail is unavailable (older snapshot, or refused at collect time) renders
+ * a plain row — nothing to expand is stated, not implied by absence.
+ */
+function QualificationRow({
+  row,
+  tally,
+  expanded,
+  onToggle,
+  now,
+}: {
+  row: QualificationRouteRow;
+  tally: { ok: number; graded: number } | null;
+  expanded: boolean;
+  onToggle: () => void;
+  now: number;
+}) {
+  const expandable = row.fixtures !== null && row.fixtures.length > 0;
+  return (
+    <>
+      <tr>
+        <td>
+          {expandable ? (
+            <button type="button" className="repo-link fixture-toggle" aria-expanded={expanded} onClick={onToggle}>
+              <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {row.check}
+            </button>
+          ) : (
+            row.check
+          )}
+        </td>
+        <td className="muted">
+          {row.provider ?? '?'}/{row.model ?? '?'}
+        </td>
+        <td>
+          <span className="badge" data-tone={toneForQualification(row)}>
+            {row.qualified ? 'yes' : 'no'}
+          </span>
+        </td>
+        <td>
+          {tally === null ? (
+            <span className="muted">
+              <Glyph glyph="—" word="detail unavailable" />
+            </span>
+          ) : (
+            <span className="badge" data-tone={tally.ok === tally.graded ? 'ok' : 'warn'}>
+              {tally.ok}/{tally.graded}
+            </span>
+          )}
+        </td>
+        <td className="muted">
+          {row.requiredLevel === null ? 'ungraded' : `${row.achievedLevel ?? 'none'} of ${row.requiredLevel}`}
+        </td>
+        <td className="muted">{row.promptVersion ?? <Glyph glyph="—" word="unknown" />}</td>
+        <td className="muted">{row.fixtureSuite ?? <Glyph glyph="—" word="unknown" />}</td>
+        <td className="muted">
+          {row.url ? (
+            <a className="repo-link" href={row.url} rel="noreferrer">
+              {formatRelative(row.createdAt, now)}
+            </a>
+          ) : (
+            formatRelative(row.createdAt, now)
+          )}
+        </td>
+      </tr>
+      {expanded && expandable && (
+        <tr className="fixture-detail">
+          <td colSpan={8}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Fixture</th>
+                  <th>Level</th>
+                  <th>Graded</th>
+                  <th>Expected</th>
+                  <th>Judged</th>
+                  <th>Criteria flagged</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(row.fixtures ?? []).map((fixture) => (
+                  <tr key={fixture.name}>
+                    <td>{fixture.name}</td>
+                    <td className="muted">{fixture.level ?? <Glyph glyph="—" word="unknown" />}</td>
+                    <td>
+                      <span className="badge" data-tone={FIXTURE_STATUS_TONE[fixture.status]}>
+                        {fixture.status}
+                      </span>
+                    </td>
+                    <td className="muted">{fixtureClaim(fixture.expected)}</td>
+                    <td className="muted">{fixtureClaim(fixture.actual)}</td>
+                    <td className="muted">
+                      {fixture.actual === null || fixture.actual.criteria.length === 0 ? (
+                        <Glyph glyph="—" word="none" />
+                      ) : (
+                        fixture.actual.criteria.join(', ')
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 function AccountRow({ session, onSignOut }: DashboardProps) {
   if (!session) return null;
 
@@ -296,6 +419,7 @@ function AccountRow({ session, onSignOut }: DashboardProps) {
 export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [now, setNow] = useState(() => Date.now());
+  const [expandedRoute, setExpandedRoute] = useState<string | null>(null);
 
   useEffect(() => {
     const url = `${import.meta.env.BASE_URL}data/snapshot.json`;
@@ -393,6 +517,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
   }
 
   const repos = visibleRepos(state.snapshot);
+  const qualificationRows = latestQualifications(state.snapshot.qualifications);
   const stale = isSnapshotStale(state.snapshot.generatedAt, now);
   const openSecurity = sumOpenSecurity(repos);
   const failing = countCiFailing(repos);
@@ -789,6 +914,7 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                     <th>Check</th>
                     <th>Route</th>
                     <th>Qualified</th>
+                    <th>Fixtures</th>
                     <th>Level</th>
                     <th>Prompt</th>
                     <th>Fixture suite</th>
@@ -796,40 +922,24 @@ export function Dashboard({ session, onSignOut, onAuthRequired }: DashboardProps
                   </tr>
                 </thead>
                 <tbody>
-                  {latestQualifications(state.snapshot.qualifications).map((row) => (
-                    <tr key={`${row.check} ${row.provider ?? ''} ${row.model ?? ''}`}>
-                      <td>{row.check}</td>
-                      <td className="muted">
-                        {row.provider ?? '?'}/{row.model ?? '?'}
-                      </td>
-                      <td>
-                        <span className="badge" data-tone={toneForQualification(row)}>
-                          {row.qualified ? 'yes' : 'no'}
-                        </span>
-                      </td>
-                      <td className="muted">
-                        {row.requiredLevel === null ? (
-                          'ungraded'
-                        ) : (
-                          `${row.achievedLevel ?? 'none'} of ${row.requiredLevel}`
-                        )}
-                      </td>
-                      <td className="muted">{row.promptVersion ?? <Glyph glyph="—" word="unknown" />}</td>
-                      <td className="muted">{row.fixtureSuite ?? <Glyph glyph="—" word="unknown" />}</td>
-                      <td className="muted">
-                        {row.url ? (
-                          <a className="repo-link" href={row.url} rel="noreferrer">
-                            {formatRelative(row.createdAt, now)}
-                          </a>
-                        ) : (
-                          formatRelative(row.createdAt, now)
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {latestQualifications(state.snapshot.qualifications).length === 0 && (
+                  {qualificationRows.map((row) => {
+                    const routeKey = `${row.check} ${row.provider ?? ''} ${row.model ?? ''}`;
+                    const tally = fixtureTally(row.fixtures);
+                    const expanded = expandedRoute === routeKey;
+                    return (
+                      <QualificationRow
+                        key={routeKey}
+                        row={row}
+                        tally={tally}
+                        expanded={expanded}
+                        onToggle={() => setExpandedRoute(expanded ? null : routeKey)}
+                        now={now}
+                      />
+                    );
+                  })}
+                  {qualificationRows.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="muted">
+                      <td colSpan={8} className="muted">
                         No readable exam artifacts in the collection window — routes may exist whose
                         artifacts have expired; see the history below.
                       </td>

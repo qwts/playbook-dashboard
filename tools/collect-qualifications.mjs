@@ -27,16 +27,27 @@
 import { inflateRawSync } from 'node:zlib';
 import {
   CAPS,
+  MAX_CRITERIA_PER_FIXTURE,
+  MAX_FIXTURES_PER_RESULT,
   MAX_LEVELS_PER_RESULT,
   MAX_QUALIFICATION_RUNS,
   MAX_RESULTS_PER_RUN,
+  QUALIFICATION_FIXTURE_STATUSES,
+  QUALIFICATION_IDENT,
+  QUALIFICATION_VERDICTS,
   sanitizeGithubUrl,
 } from '../src/lib/snapshot-schema.ts';
 
 // The bounds live in the schema — where they are enforced last — and are
 // re-exported here so the tests exercise collector and contract against the
 // same numbers.
-export { MAX_LEVELS_PER_RESULT, MAX_QUALIFICATION_RUNS, MAX_RESULTS_PER_RUN };
+export {
+  MAX_CRITERIA_PER_FIXTURE,
+  MAX_FIXTURES_PER_RESULT,
+  MAX_LEVELS_PER_RESULT,
+  MAX_QUALIFICATION_RUNS,
+  MAX_RESULTS_PER_RUN,
+};
 
 /** Where qualifications come from — the only repo and workflow ever read. */
 export const QUALIFICATIONS_SOURCE = Object.freeze({
@@ -57,14 +68,47 @@ const CONTROL_CHARS = new RegExp('[\\u0000-\\u001F\\u007F]', 'u');
 
 /**
  * The one shape a qualification string may take on the page: capped, no
- * control characters, else `null`. Nothing from an artifact is published
- * verbatim without passing through here.
+ * control characters, else `null`. Used only for fields whose vocabulary is
+ * not ours to close (a GitHub run conclusion); every judge- or
+ * artifact-controlled token goes through `qualIdent` instead.
  */
 export function qualText(value) {
   if (typeof value !== 'string' || value === '') return null;
   if (value.length > CAPS.qualification) return null;
   if (CONTROL_CHARS.test(value)) return null;
   return value;
+}
+
+/**
+ * A judge- or artifact-controlled token: the identifier grammar from the
+ * schema (no whitespace, no slashes, bounded), or null. The generic text
+ * sanitizer still admits prose, file paths, and short secret material —
+ * fields a model writes get the grammar, not the cap.
+ */
+export function qualIdent(value) {
+  if (typeof value !== 'string' || !QUALIFICATION_IDENT.test(value)) return null;
+  return value;
+}
+
+const VERDICTS = new Set(QUALIFICATION_VERDICTS);
+
+/**
+ * Absent is fine (null); present-but-invalid poisons the caller. Returning a
+ * bare null for both would let malformed evidence quietly degrade into an
+ * unknown that `fixtureTally` still counts as graded — the partial-ladder
+ * defect. The sentinel keeps the two apart.
+ */
+const REFUSED = Symbol('refused');
+
+function optionalIdent(value) {
+  if (value === undefined || value === null) return null;
+  const ident = qualIdent(value);
+  return ident === null ? REFUSED : ident;
+}
+
+function optionalVerdict(value) {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'string' && VERDICTS.has(value) ? value : REFUSED;
 }
 
 /** A commit id, abbreviated. Anything not hex is not a sha and becomes null. */
@@ -143,6 +187,58 @@ export function unzip(buffer) {
 }
 
 const LEVEL_STATUSES = new Set(['passed', 'failed', 'skipped']);
+const FIXTURE_STATUSES = new Set(QUALIFICATION_FIXTURE_STATUSES);
+
+/**
+ * The per-fixture grading, or null when any entry is malformed or over-bound —
+ * the detail is refused whole rather than published as a partial ladder, while
+ * the result's verdict stands on its own. The judge's `note` prose is the one
+ * field deliberately never read.
+ */
+export function parseFixtures(raw) {
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw) || raw.length > MAX_FIXTURES_PER_RESULT) return null;
+  const fixtures = [];
+  for (const entry of raw) {
+    const name = qualIdent(entry?.name);
+    const status = FIXTURE_STATUSES.has(entry?.status) ? entry.status : null;
+    if (name === null || status === null) return null;
+
+    // Absent fields are honest nulls; a *present* field that fails its
+    // grammar poisons the whole ladder. Publishing around it would let
+    // `fixtureTally` count malformed evidence as fully graded.
+    const level = optionalIdent(entry.level);
+    if (level === REFUSED) return null;
+
+    let expected = { assessment: null, verdict: null };
+    if (entry.expected !== undefined && entry.expected !== null) {
+      if (typeof entry.expected !== 'object' || Array.isArray(entry.expected)) return null;
+      const assessment = optionalIdent(entry.expected.assessment);
+      const verdict = optionalVerdict(entry.expected.verdict);
+      if (assessment === REFUSED || verdict === REFUSED) return null;
+      expected = { assessment, verdict };
+    }
+
+    let actual = null;
+    if (entry.actual !== undefined && entry.actual !== null) {
+      if (typeof entry.actual !== 'object' || Array.isArray(entry.actual)) return null;
+      const assessment = optionalIdent(entry.actual.assessment);
+      const verdict = optionalVerdict(entry.actual.verdict);
+      if (assessment === REFUSED || verdict === REFUSED) return null;
+      let criteria = [];
+      if (entry.actual.criteria !== undefined && entry.actual.criteria !== null) {
+        if (!Array.isArray(entry.actual.criteria)) return null;
+        if (entry.actual.criteria.length > MAX_CRITERIA_PER_FIXTURE) return null;
+        criteria = entry.actual.criteria.map((code) => qualIdent(code));
+        if (criteria.some((code) => code === null)) return null;
+      }
+      actual = { assessment, verdict, criteria };
+    }
+
+    fixtures.push({ name, level, status, expected, actual });
+  }
+  return fixtures;
+}
 
 /**
  * One `--self-test --json` payload → one published result row, or null when
@@ -163,7 +259,7 @@ export function parseSelfTest(raw) {
   }
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
 
-  const check = qualText(body.check);
+  const check = qualIdent(body.check);
   if (check === null) return null;
 
   // The verdict must be an actual boolean. Defaulting a missing or malformed
@@ -177,23 +273,31 @@ export function parseSelfTest(raw) {
   const levels = [];
   if (Array.isArray(body.levels)) {
     for (const level of body.levels.slice(0, MAX_LEVELS_PER_RESULT)) {
-      const id = qualText(level?.id);
+      const id = qualIdent(level?.id);
       const status = LEVEL_STATUSES.has(level?.status) ? level.status : null;
       if (id === null || status === null) return null;
       levels.push({ id, status });
     }
   }
 
+  // Result-level tokens follow the same rule as fixture fields: absent is an
+  // honest null, present-but-outside-the-grammar refuses the whole row.
+  const tokens = {
+    provider: optionalIdent(body.provider),
+    model: optionalIdent(body.model),
+    promptVersion: optionalIdent(body.promptVersion),
+    fixtureSuite: optionalIdent(body.fixtureSuite),
+    requiredLevel: graded ? optionalIdent(body.requiredLevel) : null,
+    achievedLevel: graded ? optionalIdent(body.achievedLevel) : null,
+  };
+  if (Object.values(tokens).includes(REFUSED)) return null;
+
   return {
     check,
-    provider: qualText(body.provider),
-    model: qualText(body.model),
-    promptVersion: qualText(body.promptVersion),
-    fixtureSuite: qualText(body.fixtureSuite),
-    requiredLevel: graded ? qualText(body.requiredLevel) : null,
-    achievedLevel: graded ? qualText(body.achievedLevel) : null,
+    ...tokens,
     qualified,
     levels,
+    fixtures: parseFixtures(body.fixtures),
   };
 }
 
@@ -205,7 +309,7 @@ export function parseSelfTest(raw) {
  */
 export function routeFromTitle(title) {
   const match = typeof title === 'string' ? /^calibrate (\S+)\/(\S+)/.exec(title) : null;
-  return { provider: qualText(match?.[1]), model: qualText(match?.[2]) };
+  return { provider: qualIdent(match?.[1] ?? null), model: qualIdent(match?.[2] ?? null) };
 }
 
 /**

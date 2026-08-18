@@ -104,6 +104,32 @@ export type QualificationResult = {
   achievedLevel: string | null;
   qualified: boolean;
   levels: { id: string; status: 'passed' | 'failed' | 'skipped' }[];
+  /**
+   * Per-fixture grading, or `null` when the detail was refused at collect
+   * time (malformed or over-bound) — the verdict stands alone in that case.
+   * Absent entirely on snapshots published before the field existed; both
+   * render as "detail unavailable", never as zero fixtures.
+   */
+  fixtures?: QualificationFixture[] | null;
+};
+
+/**
+ * One fixture's grading: what the exam expected against what the judge
+ * decided, with the criteria codes it flagged. Names and vocabulary tokens
+ * only — the judge's free-text note never reaches the snapshot.
+ */
+export type QualificationFixture = {
+  name: string;
+  level: string | null;
+  /** `skipped` is a level the ladder never reached — not graded either way. */
+  status: 'ok' | 'miss' | 'skipped';
+  expected: { assessment: string | null; verdict: string | null };
+  /**
+   * `null` when the judged claim is unavailable — a skipped rung the ladder
+   * never reached, or an artifact that omitted the judged tokens. The
+   * `status` column, not this field, is what says whether grading happened.
+   */
+  actual: { assessment: string | null; verdict: string | null; criteria: string[] } | null;
 };
 
 /** Counts only, fleet-wide. Never attributed to a repository. */

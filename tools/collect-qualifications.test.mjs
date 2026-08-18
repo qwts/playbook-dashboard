@@ -7,6 +7,7 @@ import {
   QUALIFICATIONS_SOURCE,
   collectQualifications,
   parseSelfTest,
+  qualIdent,
   qualSha,
   qualText,
   routeFromTitle,
@@ -81,6 +82,19 @@ test('qualification text is capped and refuses control characters', () => {
   assert.equal(qualText('a\nb'), null);
 });
 
+test('judge-controlled tokens take the identifier grammar, not the text cap', () => {
+  assert.equal(qualIdent('context-footprint'), 'context-footprint');
+  assert.equal(qualIdent('sha256:b2f308ffac838574'), 'sha256:b2f308ffac838574');
+  assert.equal(qualIdent('qwen3.7-max'), 'qwen3.7-max');
+  assert.equal(qualIdent('a judged sentence'), null, 'prose has whitespace; refused');
+  assert.equal(qualIdent('src/checks/index.ts'), null, 'a file path has slashes; refused');
+  assert.equal(qualIdent('-leading-dash'), null);
+  assert.equal(qualIdent('a'.repeat(80)), 'a'.repeat(80));
+  assert.equal(qualIdent('a'.repeat(81)), null);
+  assert.equal(qualIdent(''), null);
+  assert.equal(qualIdent(42), null);
+});
+
 test('a head sha is hex or nothing, and always abbreviated', () => {
   assert.equal(qualSha('60be121a7b27c94c56f85ac61c20ea61ab1d5d0f'), '60be121a7b27');
   assert.equal(qualSha('60be121'), '60be121');
@@ -135,8 +149,85 @@ test('a graded self-test payload maps to structured facts and sheds judge prose'
       { id: 'foundation', status: 'passed' },
       { id: 'field', status: 'passed' },
     ],
+    fixtures: [
+      {
+        name: 'new-composed',
+        level: null,
+        status: 'ok',
+        expected: { assessment: null, verdict: null },
+        actual: null,
+      },
+    ],
   });
   assert.ok(!JSON.stringify(result).includes('judge prose'), 'fixture notes must not survive');
+});
+
+test('fixture grading maps expectation, judgment, and criteria — and the note dies here', () => {
+  const payload = {
+    check: 'context-footprint',
+    qualified: false,
+    fixtures: [
+      {
+        name: 'new-composed',
+        level: 'foundation',
+        status: 'miss',
+        expected: { assessment: 'new-compliant', verdict: 'pass' },
+        actual: {
+          assessment: 'new-violating',
+          verdict: 'fail',
+          criteria: ['duplicated-context', 'mixed-responsibility'],
+          residualCriteria: [],
+          note: 'long judge prose',
+        },
+      },
+      { name: 'legacy-improved-residual', level: 'field', status: 'skipped', expected: { verdict: 'pass' } },
+    ],
+  };
+  const { fixtures } = parseSelfTest(JSON.stringify(payload));
+  assert.deepEqual(fixtures, [
+    {
+      name: 'new-composed',
+      level: 'foundation',
+      status: 'miss',
+      expected: { assessment: 'new-compliant', verdict: 'pass' },
+      actual: {
+        assessment: 'new-violating',
+        verdict: 'fail',
+        criteria: ['duplicated-context', 'mixed-responsibility'],
+      },
+    },
+    {
+      name: 'legacy-improved-residual',
+      level: 'field',
+      status: 'skipped',
+      expected: { assessment: null, verdict: 'pass' },
+      actual: null,
+    },
+  ]);
+  assert.ok(!JSON.stringify(fixtures).includes('judge prose'));
+});
+
+test('malformed fixture detail is refused whole; the verdict stands alone', () => {
+  const base = { check: 'x', qualified: true };
+  const cases = [
+    [{ name: 'a', status: 'exploded' }],
+    [{ status: 'ok' }],
+    [{ name: 'a', status: 'ok', actual: { criteria: ['bad\u0000code'] } }],
+    [{ name: 'a', status: 'ok', actual: { criteria: ['prose criteria code'] } }],
+    [{ name: 'a', status: 'ok', actual: { criteria: ['a/path'] } }],
+    [{ name: 'a', status: 'ok', actual: { criteria: 'not-an-array' } }],
+    [{ name: 'a', status: 'ok', level: 'two words' }],
+    [{ name: 'a', status: 'ok', expected: { verdict: 'maybe' } }],
+    [{ name: 'a', status: 'ok', actual: { assessment: 'prose with spaces' } }],
+    Array.from({ length: 25 }, (_, i) => ({ name: `f${i}`, status: 'ok' })),
+    'not an array',
+  ];
+  for (const fixtures of cases) {
+    const result = parseSelfTest(JSON.stringify({ ...base, fixtures }));
+    assert.equal(result.fixtures, null, `${JSON.stringify(fixtures).slice(0, 60)} should refuse detail`);
+    assert.equal(result.qualified, true, 'the verdict survives the refused detail');
+  }
+  assert.equal(parseSelfTest(JSON.stringify(base)).fixtures, null, 'absent detail is null, not []');
 });
 
 test('an ungraded payload is pass/fail with null levels of requirement', () => {
@@ -155,6 +246,12 @@ test('an unrecognizable payload is null, not a half-row', () => {
     null,
     'a status outside the vocabulary poisons the row rather than shipping as prose',
   );
+});
+
+test('a result-level token outside the grammar refuses the whole row', () => {
+  assert.equal(parseSelfTest(JSON.stringify({ check: 'x', qualified: true, promptVersion: 'v1 with spaces' })), null);
+  assert.equal(parseSelfTest(JSON.stringify({ check: 'x', qualified: true, model: 'a/model' })), null);
+  assert.notEqual(parseSelfTest(JSON.stringify({ check: 'x', qualified: true })), null, 'absent tokens stay honest nulls');
 });
 
 test('a payload without a boolean verdict is refused, never defaulted to failed', () => {
@@ -365,6 +462,49 @@ test("a 'read' state disclaiming results is refused too", () => {
   };
   const violations = validateSnapshot(envelope(qualifications));
   assert.ok(violations.some((v) => v.includes('must be a non-empty array')));
+});
+
+test('a fixture entry smuggling a note key is refused by the contract', () => {
+  const qualifications = {
+    source: { ...QUALIFICATIONS_SOURCE },
+    runs: [
+      {
+        runId: 1,
+        url: null,
+        createdAt: '2026-08-18T14:50:00Z',
+        headSha: null,
+        conclusion: null,
+        provider: 'qwen',
+        model: 'qwen3.7-max',
+        artifacts: 'read',
+        results: [
+          {
+            check: 'context-footprint',
+            promptVersion: null,
+            fixtureSuite: null,
+            requiredLevel: null,
+            achievedLevel: null,
+            qualified: true,
+            levels: [],
+            fixtures: [
+              {
+                name: 'new-composed',
+                level: null,
+                status: 'ok',
+                expected: { assessment: null, verdict: null },
+                actual: { assessment: null, verdict: null, criteria: [], note: 'prose' },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const violations = validateSnapshot(envelope(qualifications));
+  assert.ok(violations.some((v) => v.includes('note is not in the published schema')));
+  // The same shape without the note is exactly what the collector emits.
+  delete qualifications.runs[0].results[0].fixtures[0].actual.note;
+  assert.deepEqual(validateSnapshot(envelope(qualifications)), []);
 });
 
 test('an unknown key below qualifications is a field nobody decided to publish', () => {
