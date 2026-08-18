@@ -858,8 +858,9 @@ async function main() {
     // posture collection it shares a rate limit with. Fails closed to null
     // inside; a throw here would abort the whole snapshot over an optional
     // section. `collection` above is snapshotted first so qualification reads
-    // do not blur the fleet's own health counters — their failure is already
-    // reported by the null itself, via degradedReasons.
+    // do not blur the fleet's own health counters — a failed section is
+    // reported by its own collect-log line and renders as unknown on the
+    // page, not through degradedReasons (see the note there).
     qualifications: await collectQualifications({ ghJson, gh, warn }),
   };
 

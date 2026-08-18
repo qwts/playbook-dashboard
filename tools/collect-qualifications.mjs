@@ -17,9 +17,11 @@
  *
  * Fail-closed is per section, not per run: any failure to list, download, or
  * parse collapses to `null` (the whole section) or `artifacts: 'unreadable'`
- * (one run), and `degradedReasons` reports the null loudly. A snapshot may
- * state what this run read; it may not present a failed read as an empty but
- * healthy matrix.
+ * (one run). A null section is loud in the collect log and renders on the
+ * page as unknown — deliberately not a `degradedReasons` entry, because the
+ * committed fallback fixture must state null without reading as degraded. A
+ * snapshot may state what this run read; it may not present a failed read as
+ * an empty but healthy matrix.
  */
 
 import { inflateRawSync } from 'node:zlib';
@@ -164,8 +166,13 @@ export function parseSelfTest(raw) {
   const check = qualText(body.check);
   if (check === null) return null;
 
-  const graded = body.qualified !== undefined;
-  const qualified = graded ? body.qualified === true : body.passed === true;
+  // The verdict must be an actual boolean. Defaulting a missing or malformed
+  // verdict to `false` would publish a failed qualification for a payload
+  // that carried no verdict at all — a claim the artifact never made.
+  const graded = Object.hasOwn(body, 'qualified');
+  const verdict = graded ? body.qualified : body.passed;
+  if (typeof verdict !== 'boolean') return null;
+  const qualified = verdict;
 
   const levels = [];
   if (Array.isArray(body.levels)) {
@@ -270,9 +277,14 @@ async function collectRun({ ghJson, gh, run, runId }) {
   if (relevant.length === 0) return { ...base, artifacts: 'unreadable', results: null };
   if (relevant.every((a) => a.expired === true)) return { ...base, artifacts: 'expired', results: null };
 
+  // An exam larger than the bound is refused whole, not published as a
+  // prefix: a truncated result list under `artifacts: 'read'` would present a
+  // partial exam as a complete one, silently — the exact shape of claim the
+  // pairing rule exists to prevent.
+  if (relevant.length > MAX_RESULTS_PER_RUN) return { ...base, artifacts: 'unreadable', results: null };
+
   const results = [];
   for (const artifact of relevant) {
-    if (results.length >= MAX_RESULTS_PER_RUN) break;
     if (artifact.expired === true || !Number.isInteger(artifact.id)) continue;
     const response = await gh(`/repos/${QUALIFICATIONS_SOURCE.repo}/actions/artifacts/${artifact.id}/zip`);
     if (!response.ok) return { ...base, artifacts: 'unreadable', results: null };
@@ -281,14 +293,13 @@ async function collectRun({ ghJson, gh, run, runId }) {
     for (const [name, data] of entries) {
       if (!name.endsWith('.json')) continue;
       const result = parseSelfTest(data.toString('utf8'));
-      if (result !== null && results.length < MAX_RESULTS_PER_RUN) {
-        // The artifact's own route is the measurement; the title parse is the
-        // fallback for runs whose artifacts are gone.
-        results.push(result);
-      }
+      // The artifact's own route is the measurement; the title parse is the
+      // fallback for runs whose artifacts are gone.
+      if (result !== null) results.push(result);
     }
   }
   if (results.length === 0) return { ...base, artifacts: 'unreadable', results: null };
+  if (results.length > MAX_RESULTS_PER_RUN) return { ...base, artifacts: 'unreadable', results: null };
 
   const routed = {
     ...base,

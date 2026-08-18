@@ -22,7 +22,12 @@ import {
   visibleRepos,
   unreadableCount,
   withheldCount,
+  latestQualifications,
+  qualificationRunLabel,
+  toneForQualification,
+  toneForQualificationRun,
 } from './aggregate.ts';
+import type { QualificationResult, QualificationRun } from '../types/snapshot.ts';
 
 const NO_CI: CiStatus = {
   workflowName: null,
@@ -641,4 +646,109 @@ test('pillar coverage: a zero count beside assessed statuses cannot shrink the d
     total: 2,
     noWorkflows: 0,
   });
+});
+
+// --- qualifications --------------------------------------------------------
+
+function qualResult(overrides: Partial<QualificationResult> = {}): QualificationResult {
+  return {
+    check: 'context-footprint',
+    promptVersion: 'context-footprint-v3',
+    fixtureSuite: 'sha256:b2f308ffac838574',
+    requiredLevel: 'field',
+    achievedLevel: 'field',
+    qualified: true,
+    levels: [
+      { id: 'foundation', status: 'passed' },
+      { id: 'field', status: 'passed' },
+    ],
+    ...overrides,
+  };
+}
+
+function qualRun(overrides: Partial<QualificationRun> = {}): QualificationRun {
+  return {
+    runId: 1,
+    url: null,
+    createdAt: '2026-08-18T12:00:00Z',
+    headSha: '60be121a7b27',
+    conclusion: 'success',
+    provider: 'qwen',
+    model: 'qwen3.7-max',
+    artifacts: 'read',
+    results: [qualResult()],
+    ...overrides,
+  };
+}
+
+function quals(runs: QualificationRun[]) {
+  return { source: { repo: 'qwts/agentic-code-analysis', workflow: 'calibrate.yml' }, runs };
+}
+
+test('the matrix keeps the newest verdict per route by timestamp, not list position', () => {
+  const older = qualRun({
+    runId: 1,
+    createdAt: '2026-08-10T12:00:00Z',
+    results: [qualResult({ qualified: true })],
+  });
+  const newer = qualRun({
+    runId: 2,
+    createdAt: '2026-08-18T12:00:00Z',
+    results: [qualResult({ qualified: false, achievedLevel: null })],
+  });
+  // Oldest listed first — the API's newest-first claim deliberately inverted.
+  const rows = latestQualifications(quals([older, newer]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].qualified, false);
+  assert.equal(rows[0].runId, 2);
+});
+
+test('routes are distinct rows; expired and unreadable runs contribute nothing', () => {
+  const rows = latestQualifications(
+    quals([
+      qualRun({ runId: 1 }),
+      qualRun({ runId: 2, model: 'qwen3.8-max', results: [qualResult({ qualified: false })] }),
+      qualRun({ runId: 3, model: 'glm-5.2', artifacts: 'expired', results: null }),
+      qualRun({ runId: 4, model: 'deepseek-v4-pro', artifacts: 'unreadable', results: null }),
+    ]),
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.model, row.qualified]),
+    [
+      ['qwen3.7-max', true],
+      ['qwen3.8-max', false],
+    ],
+  );
+});
+
+test('a null section yields an empty matrix, and tones track the verdict', () => {
+  assert.deepEqual(latestQualifications(null), []);
+  const [row] = latestQualifications(quals([qualRun()]));
+  assert.equal(toneForQualification(row), 'ok');
+  const [failed] = latestQualifications(
+    quals([qualRun({ results: [qualResult({ qualified: false })] })]),
+  );
+  assert.equal(toneForQualification(failed), 'danger');
+});
+
+test('run labels state outcomes for read runs and absence for the rest', () => {
+  assert.equal(qualificationRunLabel(qualRun()), '1/1 qualified');
+  assert.equal(
+    qualificationRunLabel(
+      qualRun({ results: [qualResult(), qualResult({ check: 'doc-drift', qualified: false })] }),
+    ),
+    '1/2 qualified',
+  );
+  assert.equal(qualificationRunLabel(qualRun({ artifacts: 'expired', results: null })), 'artifacts expired');
+  assert.equal(qualificationRunLabel(qualRun({ artifacts: 'unreadable', results: null })), 'unreadable');
+});
+
+test('run tones: clean sweep ok, any miss warns, absence stays muted — never red', () => {
+  assert.equal(toneForQualificationRun(qualRun()), 'ok');
+  assert.equal(
+    toneForQualificationRun(qualRun({ results: [qualResult({ qualified: false })] })),
+    'warn',
+  );
+  assert.equal(toneForQualificationRun(qualRun({ artifacts: 'expired', results: null })), 'muted');
+  assert.equal(toneForQualificationRun(qualRun({ artifacts: 'unreadable', results: null })), 'muted');
 });
