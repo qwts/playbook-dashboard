@@ -443,9 +443,11 @@ const FIXTURE_STATUSES = new Set<string>(QUALIFICATION_FIXTURE_STATUSES);
 /**
  * One fixture's grading: what the exam expected, what the judge decided, and
  * the criteria codes it flagged. `expected` is always an object; `actual` is
- * null for a fixture the ladder never reached. Names, vocabulary tokens, and
- * bounded code lists only — the judge's `note` prose has no key here, so a
- * snapshot carrying one fails the closed-key walk.
+ * null when the judged claim is unavailable — a skipped rung, or an artifact
+ * that omitted the judged tokens; `status` is what says whether grading
+ * happened. Names, vocabulary tokens, and bounded code lists only — the
+ * judge's `note` prose has no key here, so a snapshot carrying one fails the
+ * closed-key walk.
  */
 const QUALIFICATION_FIXTURE: Shape = {
   name: isQualIdent(false),

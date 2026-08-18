@@ -280,7 +280,7 @@ function FloorBits({ repo }: { repo: RepoSnapshot }) {
  */
 /** Expected or judged, rendered as `assessment · verdict` without inventing either. */
 function fixtureClaim(claim: { assessment: string | null; verdict: string | null } | null) {
-  if (claim === null) return <Glyph glyph="—" word="not judged" />;
+  if (claim === null) return <Glyph glyph="—" word="unavailable" />;
   const parts = [claim.assessment, claim.verdict].filter((part) => part !== null);
   if (parts.length === 0) return <Glyph glyph="—" word="unknown" />;
   return parts.join(' · ');

@@ -124,7 +124,11 @@ export type QualificationFixture = {
   /** `skipped` is a level the ladder never reached — not graded either way. */
   status: 'ok' | 'miss' | 'skipped';
   expected: { assessment: string | null; verdict: string | null };
-  /** `null` for a fixture the exam never judged. */
+  /**
+   * `null` when the judged claim is unavailable — a skipped rung the ladder
+   * never reached, or an artifact that omitted the judged tokens. The
+   * `status` column, not this field, is what says whether grading happened.
+   */
   actual: { assessment: string | null; verdict: string | null; criteria: string[] } | null;
 };
 
