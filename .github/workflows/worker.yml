@@ -73,6 +73,7 @@ jobs:
           task: Install locked worker dependencies
           executable: npm
           arguments-json: '["ci","--ignore-scripts"]'
+          working-directory: workers/dashboard-auth
           timeout-seconds: '600'
           attempts: '2'
           retry-delay-seconds: '5'
