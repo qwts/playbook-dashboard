@@ -37,7 +37,7 @@ jobs:
       contents: read
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@4e70c773155c2c804e52a487352627010bea1897
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
         with:
           authorization-only: true
 
@@ -111,7 +111,15 @@ jobs:
       # and this is the one job holding the PAT. Verified the build is
       # unaffected: esbuild resolves its binary through optional platform
       # packages rather than a postinstall.
-      - run: npm ci --ignore-scripts
+      - name: Install locked collection dependencies
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install locked collection dependencies
+          executable: npm
+          arguments-json: '["ci","--ignore-scripts"]'
+          timeout-seconds: '600'
+          attempts: '2'
+          retry-delay-seconds: '5'
       - name: Collect redacted snapshot
         id: collect
         continue-on-error: true
@@ -174,7 +182,15 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci --ignore-scripts
+      - name: Install locked build dependencies
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install locked build dependencies
+          executable: npm
+          arguments-json: '["ci","--ignore-scripts"]'
+          timeout-seconds: '600'
+          attempts: '2'
+          retry-delay-seconds: '5'
       # When collection failed there is no artifact, and the committed fixture
       # from checkout is what gets built — deliberately, so a dead credential
       # degrades to stale-but-real rather than to an outage. The run still goes

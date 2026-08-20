@@ -42,7 +42,7 @@ jobs:
       contents: read
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@4e70c773155c2c804e52a487352627010bea1897
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
         with:
           authorization-only: true
 
@@ -67,7 +67,15 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: workers/dashboard-auth/package-lock.json
-      - run: npm ci --ignore-scripts
+      - name: Install locked worker dependencies
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install locked worker dependencies
+          executable: npm
+          arguments-json: '["ci","--ignore-scripts"]'
+          timeout-seconds: '600'
+          attempts: '2'
+          retry-delay-seconds: '5'
       - run: npm run ci
       # The deploy credential is account-scoped to Workers Scripts: Edit. It can
       # publish this script and read nothing of the fleet.
