@@ -37,7 +37,7 @@ jobs:
       contents: read
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        uses: qwts/qwts-agent-ci/.github/actions/ci-policy@3a5617b287d922e37f262210a1d8750d8217b56d
         with:
           authorization-only: true
 
@@ -53,7 +53,7 @@ jobs:
     # a hung npm ci, a step waiting on something that never arrives. The default
     # is 360 — six hours holding a concurrency group that does not cancel, on an
     # hourly schedule, while holding the fleet credential.
-    timeout-minutes: 10
+    timeout-minutes: 22
     # Declares no `url`, so it reports no site. It does still create a
     # `github-pages` deployment record — GitHub creates one before evaluating
     # the branch policy, then fails it — so `main` sees two records per run
@@ -112,7 +112,7 @@ jobs:
       # unaffected: esbuild resolves its binary through optional platform
       # packages rather than a postinstall.
       - name: Install locked collection dependencies
-        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        uses: qwts/qwts-agent-ci/.github/actions/bounded-command@3a5617b287d922e37f262210a1d8750d8217b56d
         with:
           task: Install locked collection dependencies
           executable: npm
@@ -171,7 +171,7 @@ jobs:
     needs: [policy, collect]
     if: needs.policy.result == 'success' && needs.collect.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 22
     permissions:
       contents: read
     steps:
@@ -183,7 +183,7 @@ jobs:
           node-version: 24
           cache: npm
       - name: Install locked build dependencies
-        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        uses: qwts/qwts-agent-ci/.github/actions/bounded-command@3a5617b287d922e37f262210a1d8750d8217b56d
         with:
           task: Install locked build dependencies
           executable: npm
