@@ -100,7 +100,7 @@ jobs:
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
       (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -115,7 +115,7 @@ jobs:
           task: Install locked dependencies
           executable: npm
           arguments-json: '["ci","--ignore-scripts"]'
-          timeout-seconds: '600'
+          timeout-seconds: '300'
           attempts: '2'
           retry-delay-seconds: '5'
       - run: npm run ci
@@ -128,7 +128,7 @@ jobs:
           task: Install pinned actionlint
           executable: go
           arguments-json: '["install","github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106"]'
-          timeout-seconds: '600'
+          timeout-seconds: '300'
           attempts: '2'
           retry-delay-seconds: '5'
       - name: Add Go tools to PATH
@@ -178,7 +178,7 @@ jobs:
     needs: [policy, merge-evidence]
     if: needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

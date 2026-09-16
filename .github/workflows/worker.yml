@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     # A typecheck and a single script upload. The default is six hours of
     # runner for a hung install, and DESIGN.md promises every job a bound.
-    timeout-minutes: 10
+    timeout-minutes: 22
     permissions:
       contents: read
     steps:
