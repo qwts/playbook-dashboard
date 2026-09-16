@@ -9,7 +9,7 @@ redaction in the snapshot, and an authenticated session in front of it.
 
 ## Data flow
 
-1. `governance/repos.json` in `qwts/playbook-engineering` defines the fleet.
+1. `governance/repos.json` in `qwts/qwts-agent-org` defines the fleet.
 2. `tools/collect.mjs` reads the manifest and GitHub APIs with a token that can
    see security alerts.
 3. It writes `public/data/snapshot.json` containing only aggregates and booleans,

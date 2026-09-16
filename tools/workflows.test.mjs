@@ -198,7 +198,7 @@ test('governed CI declares every lifecycle lane and the exact preflight title', 
   assert.match(CI, /run-name: CI \$\{\{ github\.event_name \}\} purpose=\$\{\{ inputs\.purpose \|\| 'automatic' \}\}/u);
   assert.match(CI, /merge_group:\n\s+types: \[checks_requested\]/u);
   assert.match(CI, /cancel-in-progress: \$\{\{ github\.event_name != 'push' \}\}/u);
-  assert.match(CI, /uses: qwts\/playbook-engineering\/\.github\/actions\/ci-policy@[0-9a-f]{40}/u);
+  assert.match(CI, /uses: qwts\/qwts-agent-ci\/\.github\/actions\/ci-policy@[0-9a-f]{40}/u);
   assert.match(CI, /display_title == "CI workflow_dispatch purpose=exact-sha-preflight"/u);
   assert.match(CI, /uses: actions\/setup-go@[0-9a-f]{40}/u);
   assert.match(CI, /arguments-json: '\["install","github\.com\/rhysd\/actionlint\/cmd\/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106"\]'/u);
@@ -213,7 +213,7 @@ test('direct Pages and Worker entrypoints authorize before code or credentials',
     ['worker.yml', WORKER, ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID']],
   ]) {
     const structure = structureOf(source);
-    const policy = structure.indexOf('uses: qwts/playbook-engineering/.github/actions/ci-policy@');
+    const policy = structure.indexOf('uses: qwts/qwts-agent-ci/.github/actions/ci-policy@');
     assert.ok(policy >= 0, `${name}: missing policy action`);
     assert.match(structure, /authorization-only: true/u, `${name}: direct entrypoint must use authorization-only mode`);
     for (const marker of privileged) {

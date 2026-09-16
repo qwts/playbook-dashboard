@@ -43,7 +43,7 @@ export { ALLOWED_URL_ORIGIN, MAX_DELTA_LENGTH, MAX_WORKFLOW_NAME_LENGTH, sanitiz
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ACCOUNT = 'qwts';
-const MANIFEST_REPO = 'playbook-engineering';
+const MANIFEST_REPO = 'qwts-agent-org';
 const MANIFEST_PATH = 'governance/repos.json';
 const API = 'https://api.github.com';
 
